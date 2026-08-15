@@ -1,0 +1,14 @@
+# ESP-IDF build output
+Firmware/lite3dp-fw/build/
+Firmware/lite3dp-fw/managed_components/
+Firmware/lite3dp-fw/sdkconfig.old
+
+# Extracted copies of the Arduino libraries — the .zip archives are tracked
+Firmware/Libraries/Adafruit_SH110X/
+Firmware/Libraries/PNGdec-master/
+Firmware/Libraries/TFT_eSPI-master/
+
+# Local tool settings
+.claude/settings.local.json
+.cache/
+.vscode/

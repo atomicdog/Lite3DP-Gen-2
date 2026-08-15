@@ -1,0 +1,24 @@
+menu "Lite3DP Configuration"
+
+    config LITE3DP_WIFI_ENABLED
+        bool "Enable WiFi features"
+        default y
+
+    config LITE3DP_OTA_ENABLED
+        bool "Enable OTA updates"
+        depends on LITE3DP_WIFI_ENABLED
+        default y
+
+    config LITE3DP_DEFAULT_AP_SSID
+        string "Default AP SSID"
+        default "Lite3DP"
+
+    config LITE3DP_DEFAULT_AP_PASS
+        string "Default AP password"
+        default "lite3dp123"
+
+    config LITE3DP_MDNS_HOSTNAME
+        string "mDNS hostname"
+        default "lite3dp"
+
+endmenu

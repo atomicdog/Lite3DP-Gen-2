@@ -1,0 +1,27 @@
+Signal Name,ESP32,LEDS Driver,Aux Connector,MicroSD,Play/Pause button,OLED Connector,OLED Touch screen FPC,Main Display FPC
+ENDSTOP,sensor_vp,,,,,,,
+PINSP,sensor_vn,,,,x,,,
+SD_ENTER,IO34,,,x,,,,
+T_IRQ,IO35,,,,,,x,
+PINESC,IO32,,,,,,,
+BACKLIGHT,IO33,x,,,,,,
+EN-MOTOR,IO25,,,,,,,
+DIR-MOTOR,IO26,,,,,,,
+STEP-MOTOR,IO27,,,,,,,
+PINDWN,IO14,,,,,,,
+PINUP,IO12,,,,,,,
+PINOK,IO13,,,,,,,
+MOSI,IO23,,x,x,,,x,x
+SCL-OLED,IO22,,x,,,x,,
+TX,TXD0,,x,,,,,
+RX,RXD0,,x,,,,,
+SDA-OLED,IO21,,x,,,x,,
+MISO,IO19,,x,x,,,x,x
+CLK,IO18,,x,x,,,x,x
+SD_CS,IO5,,,x,,,,
+T_CS,IO17,,x,,,,x,
+UV_DIM,IO16,x,,,,,,
+LCD_RST,IO4,,,,,,x,x
+LCD_DC,IO2,,,,,,x,x
+LCD_CS,IO15,,,,,,x,x
+BOOT,IO0,,,,,,,

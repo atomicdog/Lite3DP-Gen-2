@@ -1,0 +1,98 @@
+#include "ota_update.h"
+#include "esp_ota_ops.h"
+#include "esp_log.h"
+#include <string.h>
+
+static const char *TAG = "ota";
+
+#define OTA_BUF_SIZE    4096
+
+static esp_err_t handler_ota(httpd_req_t *req)
+{
+    ESP_LOGI(TAG, "OTA update starting (size=%d)", req->content_len);
+
+    const esp_partition_t *update_part = esp_ota_get_next_update_partition(NULL);
+    if (!update_part) {
+        ESP_LOGE(TAG, "No OTA partition available");
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No OTA partition");
+        return ESP_FAIL;
+    }
+
+    esp_ota_handle_t ota_handle;
+    esp_err_t ret = esp_ota_begin(update_part, OTA_SIZE_UNKNOWN, &ota_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "OTA begin failed: %s", esp_err_to_name(ret));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OTA begin failed");
+        return ESP_FAIL;
+    }
+
+    char *buf = malloc(OTA_BUF_SIZE);
+    if (!buf) {
+        esp_ota_abort(ota_handle);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No memory");
+        return ESP_FAIL;
+    }
+
+    int total_read = 0;
+    int remaining = req->content_len;
+
+    while (remaining > 0) {
+        int recv_len = httpd_req_recv(req, buf,
+            remaining > OTA_BUF_SIZE ? OTA_BUF_SIZE : remaining);
+        if (recv_len <= 0) {
+            ESP_LOGE(TAG, "OTA receive error");
+            free(buf);
+            esp_ota_abort(ota_handle);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Receive failed");
+            return ESP_FAIL;
+        }
+
+        ret = esp_ota_write(ota_handle, buf, recv_len);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "OTA write failed: %s", esp_err_to_name(ret));
+            free(buf);
+            esp_ota_abort(ota_handle);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Write failed");
+            return ESP_FAIL;
+        }
+
+        total_read += recv_len;
+        remaining -= recv_len;
+        ESP_LOGD(TAG, "OTA progress: %d/%d bytes", total_read, req->content_len);
+    }
+
+    free(buf);
+
+    ret = esp_ota_end(ota_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "OTA end failed: %s", esp_err_to_name(ret));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Validation failed");
+        return ESP_FAIL;
+    }
+
+    ret = esp_ota_set_boot_partition(update_part);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Set boot partition failed: %s", esp_err_to_name(ret));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Set boot failed");
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "OTA update complete (%d bytes). Restarting...", total_read);
+    httpd_resp_sendstr(req, "{\"status\":\"ok\",\"message\":\"Update complete, restarting...\"}");
+
+    /* Restart after a short delay to let the response send */
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_restart();
+
+    return ESP_OK;  /* unreachable */
+}
+
+esp_err_t ota_register_handler(httpd_handle_t server)
+{
+    const httpd_uri_t ota_uri = {
+        .uri     = "/api/ota",
+        .method  = HTTP_POST,
+        .handler = handler_ota,
+    };
+    return httpd_register_uri_handler(server, &ota_uri);
+}
