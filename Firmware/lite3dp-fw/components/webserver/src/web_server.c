@@ -1,6 +1,7 @@
 #include "web_server.h"
 #include "web_debug.h"
 #include "web_control.h"
+#include "web_profile.h"
 #include "api_key.h"
 #include "ota_update.h"
 #include "wifi_manager.h"
@@ -491,8 +492,22 @@ static const char *WEB_UI_HTML =
     "<div style='margin-top:10px'>"
     "<button class='btn' onclick='ctl(\"/api/uv\",{duty:128,seconds:3})'>UV Test 3s</button>"
     "<button class='btn btn-danger' onclick='ctl(\"/api/uv\",{duty:0})'>UV Off</button>"
+    "<button class='btn btn-danger' onclick='cleanVat()'>Clean Vat 10s</button>"
     "</div>"
     "<div id='ctlstatus' style='margin-top:10px;color:#888'></div>"
+    "</div></div>"
+    /* ── Print profile card ── */
+    "<div class='card'>"
+    "<h2>Print Profile</h2>"
+    "<div id='profgrid' style='display:grid;grid-template-columns:1fr 1fr;gap:8px'></div>"
+    "<div style='margin-top:12px'>"
+    "<button class='btn btn-success' onclick='saveProfile()'>Save Profile</button>"
+    "<button class='btn' onclick='loadProfile()'>Reload</button>"
+    "<span id='profstatus' style='margin-left:10px;color:#888'></span>"
+    "</div>"
+    "<div style='margin-top:14px;border-top:1px solid #0f3460;padding-top:10px'>"
+    "<label>Profile slots</label>"
+    "<div id='slots' style='margin-top:6px'></div>"
     "</div></div>"
     /* ── Screen mirror card ── */
     "<div class='card'>"
@@ -561,7 +576,7 @@ static const char *WEB_UI_HTML =
     "d.files.filter(f=>f.isDir).forEach(f=>{"
     "const li=document.createElement('li');"
     "li.innerHTML='<span>&#128193; '+f.name+'</span><button class=\"btn\" style=\"padding:6px 12px;font-size:13px\">Print</button>';"
-    "li.querySelector('button').onclick=e=>{e.stopPropagation();api('POST','/api/print/start',{folder:f.name}).then(r=>{if(r.status==='ok')alert('Print started: '+r.layers+' layers ('+r.slicer+')');else alert('Error: '+(r.message||'unknown'))})};"
+    "li.querySelector('button').onclick=e=>{e.stopPropagation();preview(f.name)};"
     "ul.appendChild(li)});"
     "if(d.files.filter(f=>f.isDir).length===0)ul.innerHTML='<li style=\"color:#888\">No folders found</li>';"
     "}catch(e){document.getElementById('files').innerHTML='<li style=\"color:#e94560\">SD card not available</li>'}}"
@@ -611,6 +626,53 @@ static const char *WEB_UI_HTML =
     "function jog(dir){"
     "const mm=parseFloat(document.getElementById('jogmm').value||'1');"
     "ctl('/api/motor/jog',{mm:dir*mm,speed:2})}"
+    /* Profile editor — fields mirror the touchscreen's Profile Editor */
+    "const PF=[['layerHeight','Layer height (mm)',0.001],['exposureTime','Exposure (s)',0.1],"
+    "['bottomExposure','Bottom exposure (s)',1],['bottomLayers','Bottom layers',1],"
+    "['transitionLayers','Transition layers',1],['liftHeight','Lift height (mm)',0.1],"
+    "['liftHeightInitial','Lift height, bottom (mm)',0.1],['liftSpeed','Lift speed (mm/s)',0.1],"
+    "['liftSpeedInitial','Lift speed, bottom (mm/s)',0.1],['retractSpeed','Retract speed (mm/s)',0.1],"
+    "['restTimeMs','Rest time (ms)',10],['calibrationOffset','Z offset (steps)',10],"
+    "['uvPower','UV power (0-255)',1]];"
+    "async function loadProfile(){"
+    "const p=await api('GET','/api/profile');"
+    "document.getElementById('profgrid').innerHTML=PF.map(([k,l,s])=>"
+    "'<div><label>'+l+'</label><input type=\"number\" step=\"'+s+'\" id=\"pf_'+k+'\" value=\"'+p[k]+'\"></div>'"
+    ").join('');"
+    "document.getElementById('profstatus').textContent=''}"
+    "async function saveProfile(){"
+    "const body={};PF.forEach(([k])=>{body[k]=parseFloat(document.getElementById('pf_'+k).value)});"
+    "const st=document.getElementById('profstatus');st.textContent='saving...';"
+    "const r=await api('POST','/api/profile',body);"
+    "st.textContent=r.status==='ok'?'saved':('Error: '+(r.message||'failed'))}"
+    "function renderSlots(){"
+    "document.getElementById('slots').innerHTML=[1,2,3,4,5,6].map(n=>"
+    "'<span style=\"display:inline-block;margin:0 8px 8px 0\">Slot '+String.fromCharCode(64+n)+' '+"
+    "'<button class=\"btn\" style=\"padding:4px 10px;font-size:13px\" onclick=\"slot('+n+',\\'load\\')\">Load</button>'+"
+    "'<button class=\"btn\" style=\"padding:4px 10px;font-size:13px\" onclick=\"slot('+n+',\\'save\\')\">Save</button></span>'"
+    ").join('')}"
+    "async function slot(n,action){"
+    "const st=document.getElementById('profstatus');"
+    "const r=await api('POST','/api/profile/slot',{slot:n,action:action});"
+    "if(r.status==='ok'){st.textContent='slot '+String.fromCharCode(64+n)+' '+action+'ed';"
+    "if(action==='load')loadProfile()}else{st.textContent='Error: '+(r.message||'failed')}}"
+    /* Clean vat — a real cure cycle, so confirm first */
+    "function cleanVat(){"
+    "if(!confirm('Cure the vat for 10s at full UV with a white mask?'))return;"
+    "ctl('/api/clean-vat',{seconds:10})}"
+    /* Preview a job before committing to it */
+    "async function preview(folder){"
+    "const p=await api('GET','/api/job/preview?folder='+encodeURIComponent(folder));"
+    "if(!p.layers){alert('No PNG layers found in '+folder);return}"
+    "const h=Math.floor(p.estimatedSeconds/3600),m=Math.round(p.estimatedSeconds%3600/60);"
+    "const pr=p.profile;"
+    "if(!confirm('Print '+p.folder+'?\\n\\n'+"
+    "'Layers: '+p.layers+'  ('+p.slicer+')\\n'+"
+    "'Layer height: '+pr.layerHeight+' mm\\n'+"
+    "'Exposure: '+pr.exposureTime+' s  (bottom '+pr.bottomExposure+' s x '+pr.bottomLayers+')\\n'+"
+    "'Estimated: '+h+'h '+m+'m'))return;"
+    "const r=await api('POST','/api/print/start',{folder:folder});"
+    "alert(r.status==='ok'?('Print started: '+r.layers+' layers'):('Error: '+(r.message||'unknown')))}"
     /* Screen mirror: decode the RGB565 area stream onto a canvas */
     "let liveTimer=null;"
     "async function shot(){"
@@ -675,6 +737,7 @@ static const char *WEB_UI_HTML =
     "}catch(e){st.textContent='Error: '+e.message}}"
     /* Init */
     "document.getElementById('apikey').value=getKey();"
+    "renderSlots();loadProfile();"
     "setInterval(poll,2000);poll();loadFiles();"
     "</script></body></html>";
 
@@ -755,6 +818,7 @@ esp_err_t web_server_start(void)
 
     web_debug_register(s_server);
     web_control_register(s_server);
+    web_profile_register(s_server);
 
     /* Register OTA handler if enabled */
 #ifdef CONFIG_LITE3DP_OTA_ENABLED

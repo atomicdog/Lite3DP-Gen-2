@@ -39,16 +39,9 @@ static esp_err_t reply_error(httpd_req_t *req, const char *status, const char *m
     return send_json_owned(req, j);
 }
 
-/* Manual control is only safe while no print owns the motor/UV/panel. */
-static bool printer_is_idle(void)
-{
-    print_status_t st;
-    print_get_status(&st);
-    return st.state == PRINT_STATE_IDLE ||
-           st.state == PRINT_STATE_FINISHED ||
-           st.state == PRINT_STATE_CANCELLED ||
-           st.state == PRINT_STATE_ERROR;
-}
+/* Manual control is only safe while no print owns the motor/UV/panel;
+ * print_is_idle() is the shared definition of that. */
+#define printer_is_idle() print_is_idle()
 
 /* Read the whole request body into buf and parse it as JSON.
  * An empty body is treated as an empty object. */
@@ -221,6 +214,48 @@ static esp_err_t handler_uv(httpd_req_t *req)
     return send_json_owned(req, j);
 }
 
+/* ── POST /api/clean-vat {seconds} ─────────────────────────────── */
+/* The Utilities screen's cure cycle: white mask at full UV to harden
+ * whatever is left in the vat. */
+
+static esp_err_t handler_clean_vat(httpd_req_t *req)
+{
+    if (!api_key_check(req)) return ESP_OK;
+    if (!printer_is_idle()) {
+        return reply_error(req, "409 Conflict", "printer is busy");
+    }
+
+    cJSON *body = recv_json(req);
+    if (!body) return reply_error(req, "400 Bad Request", "invalid JSON body");
+    double seconds = json_num(body, "seconds", 10.0);
+    cJSON_Delete(body);
+
+    if (seconds <= 0.0 || seconds > 300.0) {
+        return reply_error(req, "400 Bad Request", "seconds must be within (0, 300]");
+    }
+
+    if (!s_uv_timer) {
+        const esp_timer_create_args_t args = { .callback = uv_timeout_cb, .name = "web_uv" };
+        esp_timer_create(&args, &s_uv_timer);
+    }
+    esp_timer_stop(s_uv_timer);
+
+    if (!s_uv_mask_open) {
+        ui_suspend();
+        tft_set_rotation(UI_MASK_ROTATION);
+        tft_fill_screen(0xFFFF);
+        s_uv_mask_open = true;
+    }
+    uv_led_set_power(255);
+    esp_timer_start_once(s_uv_timer, (uint64_t)(seconds * 1000000.0));
+
+    ESP_LOGI(TAG, "Clean vat: full UV for %.0fs", seconds);
+    cJSON *j = cJSON_CreateObject();
+    cJSON_AddStringToObject(j, "status", "ok");
+    cJSON_AddNumberToObject(j, "seconds", seconds);
+    return send_json_owned(req, j);
+}
+
 void web_control_register(httpd_handle_t server)
 {
     const httpd_uri_t routes[] = {
@@ -228,6 +263,7 @@ void web_control_register(httpd_handle_t server)
         { .uri = "/api/motor/home", .method = HTTP_POST, .handler = handler_motor_home },
         { .uri = "/api/motor/off",  .method = HTTP_POST, .handler = handler_motor_off },
         { .uri = "/api/uv",         .method = HTTP_POST, .handler = handler_uv },
+        { .uri = "/api/clean-vat",  .method = HTTP_POST, .handler = handler_clean_vat },
     };
     for (int i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
         httpd_register_uri_handler(server, &routes[i]);

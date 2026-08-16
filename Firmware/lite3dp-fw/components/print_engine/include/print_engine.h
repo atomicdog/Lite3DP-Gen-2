@@ -68,5 +68,11 @@ esp_err_t print_cancel(void);
 /** Get a snapshot of the current print status (thread-safe). */
 esp_err_t print_get_status(print_status_t *status);
 
+/**
+ * True when no job owns the machine — i.e. it is safe to move the motor,
+ * fire the UV LED, take the panel for a mask, or edit the profile.
+ */
+bool print_is_idle(void);
+
 /** Get the event group for external monitoring. */
 EventGroupHandle_t print_get_event_group(void);

@@ -355,6 +355,16 @@ esp_err_t print_get_status(print_status_t *status)
     return ESP_OK;
 }
 
+bool print_is_idle(void)
+{
+    print_status_t st;
+    print_get_status(&st);
+    return st.state == PRINT_STATE_IDLE ||
+           st.state == PRINT_STATE_FINISHED ||
+           st.state == PRINT_STATE_CANCELLED ||
+           st.state == PRINT_STATE_ERROR;
+}
+
 EventGroupHandle_t print_get_event_group(void)
 {
     return s_print_events;
