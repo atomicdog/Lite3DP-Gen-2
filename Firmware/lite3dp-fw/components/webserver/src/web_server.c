@@ -802,7 +802,10 @@ static esp_err_t handler_options(httpd_req_t *req)
 esp_err_t web_server_start(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 20;
+    /* Registration fails silently once this is hit and the last routes
+     * registered — OTA among them — simply 404. Keep well ahead of the
+     * ~25 routes currently registered across the web_* modules. */
+    config.max_uri_handlers = 40;
     config.core_id = 0;  /* Run on Core 0 (same as WiFi) */
     /* /api/screenshot renders LVGL on this task — the 4K default is too
      * tight for a full refresh, but heap is scarce so don't overshoot. */
@@ -829,9 +832,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/key/rotate",  .method = HTTP_POST, .handler = handler_key_rotate },
     };
 
-    for (int i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
-        httpd_register_uri_handler(s_server, &routes[i]);
-    }
+    WEB_REGISTER_ROUTES(s_server, routes, TAG);
 
     web_debug_register(s_server);
     web_control_register(s_server);

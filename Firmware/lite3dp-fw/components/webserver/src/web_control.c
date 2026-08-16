@@ -3,6 +3,7 @@
  * Every motion/UV command is refused unless the printer is idle. */
 
 #include "web_control.h"
+#include "web_debug.h"   /* WEB_REGISTER_ROUTES */
 #include "api_key.h"
 #include "print_engine.h"
 #include "hal_motor.h"
@@ -265,7 +266,5 @@ void web_control_register(httpd_handle_t server)
         { .uri = "/api/uv",         .method = HTTP_POST, .handler = handler_uv },
         { .uri = "/api/clean-vat",  .method = HTTP_POST, .handler = handler_clean_vat },
     };
-    for (int i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
-        httpd_register_uri_handler(server, &routes[i]);
-    }
+    WEB_REGISTER_ROUTES(server, routes, TAG);
 }

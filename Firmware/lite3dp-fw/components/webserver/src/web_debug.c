@@ -124,7 +124,5 @@ void web_debug_register(httpd_handle_t server)
         { .uri = "/api/screenshot", .method = HTTP_GET, .handler = handler_screenshot },
         { .uri = "/api/ui/nav",     .method = HTTP_GET, .handler = handler_ui_nav },
     };
-    for (int i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
-        httpd_register_uri_handler(server, &routes[i]);
-    }
+    WEB_REGISTER_ROUTES(server, routes, TAG);
 }

@@ -3,6 +3,7 @@
  * so the printer stays fully operable when touch is not. */
 
 #include "web_profile.h"
+#include "web_debug.h"   /* WEB_REGISTER_ROUTES */
 #include "api_key.h"
 #include "profile_store.h"
 #include "print_engine.h"
@@ -311,7 +312,5 @@ void web_profile_register(httpd_handle_t server)
         { .uri = "/api/profile/slot", .method = HTTP_POST, .handler = handler_profile_slot },
         { .uri = "/api/job/preview",  .method = HTTP_GET,  .handler = handler_job_preview },
     };
-    for (int i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
-        httpd_register_uri_handler(server, &routes[i]);
-    }
+    WEB_REGISTER_ROUTES(server, routes, TAG);
 }
