@@ -1,4 +1,6 @@
 #include "web_server.h"
+#include "web_debug.h"
+#include "web_control.h"
 #include "ota_update.h"
 #include "wifi_manager.h"
 #include "print_engine.h"
@@ -8,9 +10,12 @@
 #include "sd_card.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_system.h"
+#include "esp_timer.h"
 #include "cJSON.h"
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 static const char *TAG = "web_srv";
@@ -61,6 +66,22 @@ static esp_err_t handler_status(httpd_req_t *req)
     }
     cJSON_AddStringToObject(j, "stateStr", state_str);
 
+    /* Connectivity and health, so a remote client can see the printer's
+     * situation without a second round trip. */
+    const char *wifi_mode;
+    switch (wifi_get_state()) {
+    case WIFI_STATE_AP_ACTIVE:        wifi_mode = "ap"; break;
+    case WIFI_STATE_STA_CONNECTING:   wifi_mode = "connecting"; break;
+    case WIFI_STATE_STA_CONNECTED:    wifi_mode = "sta"; break;
+    case WIFI_STATE_STA_DISCONNECTED: wifi_mode = "disconnected"; break;
+    default:                          wifi_mode = "idle"; break;
+    }
+    cJSON_AddStringToObject(j, "wifiMode", wifi_mode);
+    cJSON_AddStringToObject(j, "ip", wifi_get_ip_str());
+    cJSON_AddNumberToObject(j, "freeHeap", esp_get_free_heap_size());
+    cJSON_AddNumberToObject(j, "uptimeMs", esp_timer_get_time() / 1000);
+    cJSON_AddBoolToObject(j, "sdPresent", sd_card_present());
+
     return send_json(req, j);
 }
 
@@ -68,7 +89,10 @@ static esp_err_t handler_status(httpd_req_t *req)
 
 static esp_err_t handler_files(httpd_req_t *req)
 {
-    sd_entry_t entries[SD_MAX_ENTRIES];
+    /* 64 entries x 68 bytes overflows the httpd task stack — keep the
+     * listing out of it. Safe as a single buffer: esp_http_server runs
+     * handlers sequentially on one task. */
+    static sd_entry_t entries[SD_MAX_ENTRIES];
     int count = 0;
 
     cJSON *j = cJSON_CreateObject();
@@ -145,40 +169,32 @@ static esp_err_t handler_print_start(httpd_req_t *req)
     const char *folder = folder_item->valuestring;
     ESP_LOGI(TAG, "Print start requested: %s", folder);
 
-    /* Build the print job */
+    /* Same job assembly (and folder-name sanitizing) the touch UI uses */
     print_job_t job;
-    memset(&job, 0, sizeof(job));
-    strncpy(job.folder_name, folder, sizeof(job.folder_name) - 1);
-    snprintf(job.folder_path, sizeof(job.folder_path), "%s/%s", SD_MOUNT_POINT, folder);
-
-    /* Detect slicer */
-    slicer_detect(job.folder_path, folder, &job.slicer);
-
-    /* Count layers */
-    int file_count = 0;
-    sd_count_files(folder, ".png", &file_count);
-    job.total_layers = file_count;
-
-    /* Load active profile */
-    profile_load(0, &job.profile);
-
+    esp_err_t ret = print_job_build(folder, &job);
     cJSON_Delete(body);
 
-    if (job.total_layers == 0) {
-        cJSON *resp = cJSON_CreateObject();
+    cJSON *resp = cJSON_CreateObject();
+    if (ret == ESP_ERR_INVALID_ARG) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        cJSON_AddStringToObject(resp, "status", "error");
+        cJSON_AddStringToObject(resp, "message", "Invalid folder name");
+        return send_json(req, resp);
+    }
+    if (ret == ESP_ERR_NOT_FOUND) {
+        httpd_resp_set_status(req, "404 Not Found");
         cJSON_AddStringToObject(resp, "status", "error");
         cJSON_AddStringToObject(resp, "message", "No PNG files found in folder");
         return send_json(req, resp);
     }
 
-    esp_err_t ret = print_start(&job);
-
-    cJSON *resp = cJSON_CreateObject();
+    ret = print_start(&job);
     if (ret == ESP_OK) {
         cJSON_AddStringToObject(resp, "status", "ok");
         cJSON_AddNumberToObject(resp, "layers", job.total_layers);
         cJSON_AddStringToObject(resp, "slicer", slicer_type_name(job.slicer));
     } else {
+        httpd_resp_set_status(req, "409 Conflict");
         cJSON_AddStringToObject(resp, "status", "error");
         cJSON_AddStringToObject(resp, "message", "Print already in progress");
     }
@@ -187,37 +203,52 @@ static esp_err_t handler_print_start(httpd_req_t *req)
 
 /* ── POST /api/print/pause ─────────────────────────────────────── */
 
+/* Report the engine's verdict instead of unconditional success */
+static esp_err_t send_cmd_result(httpd_req_t *req, esp_err_t ret, const char *ok_state)
+{
+    cJSON *j = cJSON_CreateObject();
+    if (ret == ESP_OK) {
+        cJSON_AddStringToObject(j, "status", ok_state);
+    } else {
+        httpd_resp_set_status(req, "409 Conflict");
+        cJSON_AddStringToObject(j, "status", "error");
+        cJSON_AddStringToObject(j, "message", esp_err_to_name(ret));
+    }
+    return send_json(req, j);
+}
+
 static esp_err_t handler_print_pause(httpd_req_t *req)
 {
-    print_pause();
-    cJSON *j = cJSON_CreateObject();
-    cJSON_AddStringToObject(j, "status", "paused");
-    return send_json(req, j);
+    return send_cmd_result(req, print_pause(), "paused");
 }
 
 /* ── POST /api/print/resume ────────────────────────────────────── */
 
 static esp_err_t handler_print_resume(httpd_req_t *req)
 {
-    print_resume();
-    cJSON *j = cJSON_CreateObject();
-    cJSON_AddStringToObject(j, "status", "resumed");
-    return send_json(req, j);
+    return send_cmd_result(req, print_resume(), "resumed");
 }
 
 /* ── POST /api/print/cancel ────────────────────────────────────── */
 
 static esp_err_t handler_print_cancel(httpd_req_t *req)
 {
-    print_cancel();
-    cJSON *j = cJSON_CreateObject();
-    cJSON_AddStringToObject(j, "status", "cancelled");
-    return send_json(req, j);
+    return send_cmd_result(req, print_cancel(), "cancelled");
 }
 
 /* ── POST /api/upload?path=<dir> ───────────────────────────────── */
 /* Receives raw file data with filename in X-Filename header.
  * Creates directory if needed, writes file to SD card. */
+
+/* A single safe path element: no separators, no traversal, not empty.
+ * Both the directory and the filename come from the network. */
+static bool is_safe_path_element(const char *s)
+{
+    if (!s || s[0] == '\0') return false;
+    if (strchr(s, '/') || strchr(s, '\\')) return false;
+    if (strcmp(s, ".") == 0 || strcmp(s, "..") == 0) return false;
+    return true;
+}
 
 static esp_err_t handler_upload(httpd_req_t *req)
 {
@@ -235,6 +266,13 @@ static esp_err_t handler_upload(httpd_req_t *req)
     char filename[64] = {0};
     if (httpd_req_get_hdr_value_str(req, "X-Filename", filename, sizeof(filename)) != ESP_OK) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing X-Filename header");
+        return ESP_FAIL;
+    }
+
+    if (!is_safe_path_element(dir_name) || !is_safe_path_element(filename)) {
+        ESP_LOGW(TAG, "Rejected upload path: dir='%s' file='%s'", dir_name, filename);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                            "Invalid directory or filename");
         return ESP_FAIL;
     }
 
@@ -387,6 +425,35 @@ static const char *WEB_UI_HTML =
     "<button class='btn' onclick='printCmd(\"resume\")'>Resume</button>"
     "<button class='btn btn-danger' onclick='printCmd(\"cancel\")'>Cancel</button>"
     "</div></div>"
+    /* ── Manual control card ── */
+    "<div class='card'>"
+    "<h2>Manual Control</h2>"
+    "<div style='text-align:center'>"
+    "<label>Jog distance (mm)</label>"
+    "<input type='number' id='jogmm' value='1' step='0.1' min='0.1' max='50' "
+    "style='width:90px;display:inline-block;text-align:center'>"
+    "<div style='margin-top:10px'>"
+    "<button class='btn' onclick='jog(1)'>&#9650; Up</button>"
+    "<button class='btn' onclick='jog(-1)'>&#9660; Down</button>"
+    "<button class='btn' onclick='ctl(\"/api/motor/home\",{})'>Home</button>"
+    "<button class='btn' onclick='ctl(\"/api/motor/off\",{})'>Motor Off</button>"
+    "</div>"
+    "<div style='margin-top:10px'>"
+    "<button class='btn' onclick='ctl(\"/api/uv\",{duty:128,seconds:3})'>UV Test 3s</button>"
+    "<button class='btn btn-danger' onclick='ctl(\"/api/uv\",{duty:0})'>UV Off</button>"
+    "</div>"
+    "<div id='ctlstatus' style='margin-top:10px;color:#888'></div>"
+    "</div></div>"
+    /* ── Screen mirror card ── */
+    "<div class='card'>"
+    "<h2>Printer Screen</h2>"
+    "<div style='text-align:center'>"
+    "<img id='screen' alt='press Refresh' "
+    "style='max-width:100%;border:1px solid #0f3460;border-radius:8px;background:#000'>"
+    "<div style='margin-top:10px'>"
+    "<button class='btn' onclick='shot()'>Refresh</button>"
+    "<button class='btn' onclick='toggleLive()' id='livebtn'>Live</button>"
+    "</div></div></div>"
     /* ── File browser card ── */
     "<div class='card'>"
     "<h2>Files on SD Card</h2>"
@@ -466,6 +533,45 @@ static const char *WEB_UI_HTML =
     "done++}catch(e){stat.textContent='Error: '+e.message;return}}"
     "bar.style.width='100%';stat.textContent='Done! '+done+' files uploaded to /'+dir;"
     "loadFiles()}"
+    /* Manual control */
+    "async function ctl(url,body){"
+    "const s=document.getElementById('ctlstatus');s.textContent='...';"
+    "try{const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},"
+    "body:JSON.stringify(body)});const j=await r.json();"
+    "s.textContent=r.ok?'OK':'Error: '+(j.message||r.status);"
+    "}catch(e){s.textContent='Error: '+e.message}}"
+    "function jog(dir){"
+    "const mm=parseFloat(document.getElementById('jogmm').value||'1');"
+    "ctl('/api/motor/jog',{mm:dir*mm,speed:2})}"
+    /* Screen mirror: decode the RGB565 area stream onto a canvas */
+    "let liveTimer=null;"
+    "async function shot(){"
+    "const r=await fetch('/api/screenshot');"
+    "if(!r.ok){document.getElementById('screen').alt='screen busy (printing)';return}"
+    "const b=new DataView(await r.arrayBuffer());"
+    "if(b.byteLength<8||b.getUint32(0,false)!==0x4C333450){return}"  /* 'L3DP' */
+    "const w=b.getUint16(4,true),h=b.getUint16(6,true);"
+    "const cv=document.createElement('canvas');cv.width=w;cv.height=h;"
+    "const cx=cv.getContext('2d'),im=cx.createImageData(w,h);"
+    "let off=8;"
+    "while(off+8<=b.byteLength){"
+    "const x1=b.getUint16(off,true),y1=b.getUint16(off+2,true),"
+    "x2=b.getUint16(off+4,true),y2=b.getUint16(off+6,true);off+=8;"
+    "const aw=x2-x1+1,ah=y2-y1+1,n=aw*ah;"
+    "if(aw<=0||ah<=0||off+n*2>b.byteLength)break;"
+    "for(let i=0;i<n;i++){"
+    "const v=b.getUint16(off+i*2,false);"  /* pixels are big-endian */
+    "const px=x1+(i%aw),py=y1+Math.floor(i/aw),d=(py*w+px)*4;"
+    "const rr=(v>>11)&31,gg=(v>>5)&63,bb=v&31;"
+    "im.data[d]=(rr<<3)|(rr>>2);im.data[d+1]=(gg<<2)|(gg>>4);"
+    "im.data[d+2]=(bb<<3)|(bb>>2);im.data[d+3]=255}"
+    "off+=n*2}"
+    "cx.putImageData(im,0,0);"
+    "document.getElementById('screen').src=cv.toDataURL()}"
+    "function toggleLive(){"
+    "const btn=document.getElementById('livebtn');"
+    "if(liveTimer){clearInterval(liveTimer);liveTimer=null;btn.textContent='Live'}"
+    "else{liveTimer=setInterval(shot,2000);btn.textContent='Stop';shot()}}"
     /* WiFi config */
     "async function saveWifi(){"
     "const s=document.getElementById('wssid').value,p=document.getElementById('wpass').value;"
@@ -507,8 +613,11 @@ static esp_err_t handler_options(httpd_req_t *req)
 esp_err_t web_server_start(void)
 {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.max_uri_handlers = 16;
+    config.max_uri_handlers = 20;
     config.core_id = 0;  /* Run on Core 0 (same as WiFi) */
+    /* /api/screenshot renders LVGL on this task — the 4K default is too
+     * tight for a full refresh, but heap is scarce so don't overshoot. */
+    config.stack_size = 7168;
 
     esp_err_t ret = httpd_start(&s_server, &config);
     if (ret != ESP_OK) {
@@ -533,6 +642,9 @@ esp_err_t web_server_start(void)
     for (int i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
         httpd_register_uri_handler(s_server, &routes[i]);
     }
+
+    web_debug_register(s_server);
+    web_control_register(s_server);
 
     /* Register OTA handler if enabled */
 #ifdef CONFIG_LITE3DP_OTA_ENABLED

@@ -6,6 +6,8 @@
 #include "hal_gpio.h"
 #include "hal_spi_bus.h"
 #include "sd_card.h"
+#include "slicer_detect.h"
+#include "profile_store.h"
 #include "tft_driver.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -258,12 +260,47 @@ esp_err_t print_engine_init(void)
     return ESP_OK;
 }
 
+esp_err_t print_job_build(const char *folder_name, print_job_t *out)
+{
+    if (!folder_name || !out) return ESP_ERR_INVALID_ARG;
+
+    /* Folder names arrive from the network as well as the touch UI: keep
+     * them to a single path element so nothing can escape /sdcard. */
+    size_t len = strlen(folder_name);
+    if (len == 0 || len >= sizeof(out->folder_name)) return ESP_ERR_INVALID_ARG;
+    if (strchr(folder_name, '/') || strchr(folder_name, '\\')) return ESP_ERR_INVALID_ARG;
+    if (strcmp(folder_name, ".") == 0 || strcmp(folder_name, "..") == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    memset(out, 0, sizeof(*out));
+    strncpy(out->folder_name, folder_name, sizeof(out->folder_name) - 1);
+    snprintf(out->folder_path, sizeof(out->folder_path),
+             "%s/%s", SD_MOUNT_POINT, folder_name);
+
+    slicer_detect(out->folder_path, folder_name, &out->slicer);
+
+    int file_count = 0;
+    sd_count_files(folder_name, ".png", &file_count);
+    out->total_layers = file_count;
+
+    profile_load(0, &out->profile);
+
+    if (file_count == 0) return ESP_ERR_NOT_FOUND;
+    return ESP_OK;
+}
+
 esp_err_t print_start(const print_job_t *job)
 {
+    /* Check-and-claim under the status mutex so a touch start and a web
+     * start can't both pass the state test and interleave. */
+    xSemaphoreTake(s_status_mutex, portMAX_DELAY);
+
     if (s_status.state != PRINT_STATE_IDLE &&
         s_status.state != PRINT_STATE_FINISHED &&
         s_status.state != PRINT_STATE_CANCELLED &&
         s_status.state != PRINT_STATE_ERROR) {
+        xSemaphoreGive(s_status_mutex);
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -273,6 +310,10 @@ esp_err_t print_start(const print_job_t *job)
     s_status.current_layer = 0;
     s_status.elapsed_ms = 0;
     s_status.estimated_remaining_ms = 0;
+    /* Claim the engine before releasing so the next caller sees it busy */
+    s_status.state = PRINT_STATE_CALIBRATING;
+
+    xSemaphoreGive(s_status_mutex);
 
     /* Signal the print task to start */
     xEventGroupSetBits(s_print_events, PRINT_EVT_STARTED);

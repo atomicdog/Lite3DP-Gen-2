@@ -65,6 +65,12 @@ void app_main(void)
     ESP_ERROR_CHECK(spi_bus_shared_init());
 
     ESP_ERROR_CHECK(tft_init());
+
+#ifdef CONFIG_LITE3DP_DISPLAY_TEST
+    backlight_set(100);
+    tft_test_pattern();
+#endif
+
     tft_fill_screen(0x0000);   /* Clear to black */
 
     /* Initialize XPT2046 touch controller */

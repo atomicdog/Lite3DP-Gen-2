@@ -11,8 +11,10 @@ static const char *TAG = "png_dec";
 /* PNGIMAGE is ~42KB — allocate statically to avoid heap fragmentation */
 static PNGIMAGE s_png;
 
-/* RGB565 line buffer for TFT output (one scanline) */
-static uint16_t s_line_buf[TFT_WIDTH];
+/* RGB565 line buffer for TFT output (one scanline). Sized for the panel's
+ * long side: PNG_getLineAsRGB565 writes the full decoded width before we
+ * get a chance to clip, so an oversize source must not overrun this. */
+static uint16_t s_line_buf[TFT_NATIVE_LONG_SIDE];
 
 /* ── VFS file I/O callbacks for PNGdec ─────────────────────────── */
 

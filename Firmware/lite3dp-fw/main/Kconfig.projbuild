@@ -1,5 +1,27 @@
 menu "Lite3DP Configuration"
 
+    choice LITE3DP_TFT_CONTROLLER
+        prompt "TFT controller"
+        default LITE3DP_TFT_ST7796
+        help
+            The original Arduino firmware drove this panel as an ST7796
+            (TFT_eSPI User_Setup.h). ILI9481 is kept as an A/B fallback
+            if the ST7796 init misbehaves on your unit.
+
+        config LITE3DP_TFT_ST7796
+            bool "ST7796S"
+
+        config LITE3DP_TFT_ILI9481
+            bool "ILI9481"
+    endchoice
+
+    config LITE3DP_DISPLAY_TEST
+        bool "Run display test pattern at boot"
+        default n
+        help
+            Cycles all four rotations with color fills and geometry
+            frames (~30 s) after TFT init. Bring-up/diagnostic aid.
+
     config LITE3DP_WIFI_ENABLED
         bool "Enable WiFi features"
         default y

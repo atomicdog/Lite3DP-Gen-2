@@ -40,6 +40,19 @@ typedef struct {
 /** Initialize the print engine (creates print task, event group). */
 esp_err_t print_engine_init(void);
 
+/**
+ * Assemble a job from an SD-card folder name: validates the name, builds
+ * the path, detects the slicer format, counts layer PNGs and loads the
+ * active profile. Shared by the touch UI and the web API so both agree on
+ * what a job is — and so folder names from the network get sanitized in
+ * exactly one place.
+ *
+ * @return ESP_ERR_INVALID_ARG  name empty, too long, or contains a path
+ *                              separator or ".." traversal
+ *         ESP_ERR_NOT_FOUND    no layer PNGs in that folder
+ */
+esp_err_t print_job_build(const char *folder_name, print_job_t *out);
+
 /** Start a print job. The print task takes ownership of the job data. */
 esp_err_t print_start(const print_job_t *job);
 

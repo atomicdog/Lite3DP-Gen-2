@@ -39,3 +39,31 @@ void ui_suspend(void);
 
 /** Resume LVGL rendering after mask projection is done. */
 void ui_resume(void);
+
+/**
+ * LVGL is not thread-safe. Any LVGL call made outside the UI task
+ * (print monitor, web handlers) must be wrapped in ui_lock()/ui_unlock().
+ * The mutex is recursive, so callbacks running inside lv_timer_handler()
+ * may take it again.
+ */
+void ui_lock(void);
+void ui_unlock(void);
+
+/**
+ * Sink for screen capture. Called once per flushed area, in the caller's
+ * task context, with big-endian RGB565 pixels for that rectangle.
+ * Return ESP_OK to continue; anything else aborts the capture.
+ */
+typedef esp_err_t (*ui_capture_cb_t)(void *ctx, uint16_t x1, uint16_t y1,
+                                     uint16_t x2, uint16_t y2,
+                                     const void *pixels, size_t len);
+
+/**
+ * Force a full redraw of the active screen, streaming every flushed area
+ * to `cb` (and to the panel as usual). Runs synchronously in the calling
+ * task, so an HTTP handler may write the pixels straight to its response.
+ * Pass cb = NULL to read back the screen geometry without redrawing.
+ * Returns ESP_ERR_INVALID_STATE while LVGL is suspended for a print.
+ */
+esp_err_t ui_capture_screen(ui_capture_cb_t cb, void *ctx,
+                            uint16_t *out_w, uint16_t *out_h);

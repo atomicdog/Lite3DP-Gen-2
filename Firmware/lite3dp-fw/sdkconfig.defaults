@@ -22,7 +22,10 @@ CONFIG_HTTPD_MAX_URI_LEN=512
 # SPIFFS
 CONFIG_SPIFFS_MAX_PARTITIONS=1
 
-# LVGL fonts
+# LVGL
+# Byte-swap LVGL's RGB565 output to match the TFT's big-endian SPI byte order
+# (the PNG mask path and tft_fill_screen already produce big-endian).
+CONFIG_LV_COLOR_16_SWAP=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
 CONFIG_LV_FONT_MONTSERRAT_40=y
 

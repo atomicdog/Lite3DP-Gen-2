@@ -1,7 +1,5 @@
 dependencies:
   lvgl/lvgl:
     version: "~8.3.0"
-  espressif/esp_lvgl_port:
-    version: "~1.4.0"
   espressif/mdns:
     version: "~1.0.0"

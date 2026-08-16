@@ -11,6 +11,7 @@
 #include "tft_driver.h"
 #include "touch_input.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
@@ -26,6 +27,20 @@ static const char *TAG = "ui_scr";
 #define COL_TEXT        lv_color_hex(0xEEEEEE)
 #define COL_TEXT_DIM    lv_color_hex(0x888888)
 #define COL_GREEN       lv_color_hex(0x2ECC71)
+
+/* ── Layout metrics ────────────────────────────────────────────── */
+/* Screens run landscape (480x320). Derive sizes from the live display
+ * so a rotation change doesn't strand hard-coded coordinates. */
+
+#define UI_MENU_ROTATION    3
+#define UI_MASK_ROTATION    2
+
+static inline lv_coord_t scr_w(void) { return lv_disp_get_hor_res(NULL); }
+static inline lv_coord_t scr_h(void) { return lv_disp_get_ver_res(NULL); }
+
+/* Body area below the title bar */
+static inline lv_coord_t content_w(void) { return scr_w() - 40; }
+static inline lv_coord_t content_h(void) { return scr_h() - 70; }
 
 /* ── Shared state: selected print job ──────────────────────────── */
 
@@ -55,7 +70,7 @@ static lv_obj_t *s_cal_offset_label = NULL;
 static lv_obj_t *create_menu_btn(lv_obj_t *parent, const char *text, lv_event_cb_t cb)
 {
     lv_obj_t *btn = lv_btn_create(parent);
-    lv_obj_set_size(btn, 280, 50);
+    lv_obj_set_size(btn, 300, 44);
     lv_obj_set_style_bg_color(btn, COL_ACCENT, 0);
     lv_obj_set_style_bg_color(btn, COL_HIGHLIGHT, LV_STATE_FOCUSED);
     lv_obj_set_style_radius(btn, 8, 0);
@@ -104,16 +119,16 @@ lv_obj_t *ui_screen_main_menu(void)
     lv_label_set_text(title, "Lite3DP Gen 2");
     lv_obj_set_style_text_color(title, COL_HIGHLIGHT, 0);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 20);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 8);
 
     lv_obj_t *cont = lv_obj_create(s_scr_main_menu);
-    lv_obj_set_size(cont, 300, 340);
-    lv_obj_align(cont, LV_ALIGN_CENTER, 0, 20);
+    lv_obj_set_size(cont, content_w(), content_h());
+    lv_obj_align(cont, LV_ALIGN_BOTTOM_MID, 0, -8);
     lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(cont, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_bg_opa(cont, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(cont, 0, 0);
-    lv_obj_set_style_pad_row(cont, 15, 0);
+    lv_obj_set_style_pad_row(cont, 10, 0);
     lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
 
     create_menu_btn(cont, LV_SYMBOL_PLAY " Print", on_print_clicked);
@@ -142,22 +157,16 @@ static void on_folder_selected(lv_event_t *e)
 
     ESP_LOGI(TAG, "Selected folder: %s", name);
 
-    /* Prepare the pending job */
-    memset(&s_pending_job, 0, sizeof(s_pending_job));
-    strncpy(s_pending_job.folder_name, name, sizeof(s_pending_job.folder_name) - 1);
-    snprintf(s_pending_job.folder_path, sizeof(s_pending_job.folder_path),
-             "%s/%s", SD_MOUNT_POINT, name);
-
-    /* Detect slicer format */
-    slicer_detect(s_pending_job.folder_path, name, &s_pending_job.slicer);
-
-    /* Count layers */
-    int file_count = 0;
-    sd_count_files(name, ".png", &file_count);
-    s_pending_job.total_layers = file_count;
-
-    /* Load active profile */
-    profile_load(0, &s_pending_job.profile);
+    /* Same assembly the web API uses (see print_job_build) */
+    esp_err_t err = print_job_build(name, &s_pending_job);
+    if (err == ESP_ERR_INVALID_ARG) {
+        ESP_LOGW(TAG, "Rejected folder name: %s", name);
+        return;
+    }
+    if (err == ESP_ERR_NOT_FOUND) {
+        ESP_LOGW(TAG, "No layer PNGs in %s", name);
+        /* Still show the preview — it reports 0 layers */
+    }
 
     /* Force preview screen recreation with new data */
     if (s_scr_print_preview) {
@@ -187,8 +196,8 @@ lv_obj_t *ui_screen_file_browser(void)
     create_back_btn(s_scr_file_browser, on_file_back);
 
     lv_obj_t *list = lv_list_create(s_scr_file_browser);
-    lv_obj_set_size(list, 300, 360);
-    lv_obj_align(list, LV_ALIGN_CENTER, 0, 20);
+    lv_obj_set_size(list, content_w(), content_h());
+    lv_obj_align(list, LV_ALIGN_BOTTOM_MID, 0, -8);
     lv_obj_set_style_bg_color(list, COL_CARD, 0);
 
     sd_entry_t entries[SD_MAX_ENTRIES];
@@ -223,8 +232,12 @@ static void on_start_print(lv_event_t *e)
              s_pending_job.folder_name, s_pending_job.total_layers,
              slicer_type_name(s_pending_job.slicer));
 
-    ui_navigate(SCREEN_PRINTING);
-    print_start(&s_pending_job);
+    /* The UI transition is driven by PRINT_EVT_STARTED in print_monitor_task,
+     * so touch-started and web-started prints suspend LVGL the same way. */
+    esp_err_t err = print_start(&s_pending_job);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "print_start rejected: %s", esp_err_to_name(err));
+    }
 }
 
 static void on_preview_back(lv_event_t *e) { ui_navigate(SCREEN_FILE_BROWSER); }
@@ -243,18 +256,18 @@ lv_obj_t *ui_screen_print_preview(void)
     lv_obj_t *title = lv_label_create(s_scr_print_preview);
     lv_label_set_text(title, "Print Preview");
     lv_obj_set_style_text_color(title, COL_TEXT, 0);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 10);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 8);
 
     /* Folder name */
     lv_obj_t *folder_lbl = lv_label_create(s_scr_print_preview);
     lv_obj_set_style_text_color(folder_lbl, COL_HIGHLIGHT, 0);
     lv_label_set_text(folder_lbl, s_pending_job.folder_name);
-    lv_obj_align(folder_lbl, LV_ALIGN_TOP_MID, 0, 40);
+    lv_obj_align(folder_lbl, LV_ALIGN_TOP_MID, 0, 30);
 
-    /* Job info card */
+    /* Job info card — sits between the header and the Start button */
     lv_obj_t *card = lv_obj_create(s_scr_print_preview);
-    lv_obj_set_size(card, 300, 240);
-    lv_obj_align(card, LV_ALIGN_CENTER, 0, -10);
+    lv_obj_set_size(card, content_w(), scr_h() - 120);
+    lv_obj_align(card, LV_ALIGN_TOP_MID, 0, 52);
     lv_obj_set_style_bg_color(card, COL_CARD, 0);
     lv_obj_set_style_radius(card, 12, 0);
 
@@ -299,8 +312,8 @@ lv_obj_t *ui_screen_print_preview(void)
 
     /* Start button */
     lv_obj_t *start_btn = lv_btn_create(s_scr_print_preview);
-    lv_obj_set_size(start_btn, 200, 50);
-    lv_obj_align(start_btn, LV_ALIGN_BOTTOM_MID, 0, -20);
+    lv_obj_set_size(start_btn, 200, 44);
+    lv_obj_align(start_btn, LV_ALIGN_BOTTOM_MID, 0, -12);
     lv_obj_set_style_bg_color(start_btn, COL_GREEN, 0);
     lv_obj_set_style_bg_color(start_btn, COL_HIGHLIGHT, LV_STATE_FOCUSED);
     lv_obj_set_style_radius(start_btn, 12, 0);
@@ -353,8 +366,8 @@ lv_obj_t *ui_screen_settings(void)
     create_back_btn(s_scr_settings, on_settings_back);
 
     lv_obj_t *cont = lv_obj_create(s_scr_settings);
-    lv_obj_set_size(cont, 300, 340);
-    lv_obj_align(cont, LV_ALIGN_CENTER, 0, 20);
+    lv_obj_set_size(cont, content_w(), content_h());
+    lv_obj_align(cont, LV_ALIGN_BOTTOM_MID, 0, -8);
     lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(cont, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_bg_opa(cont, LV_OPA_TRANSP, 0);
@@ -371,7 +384,7 @@ lv_obj_t *ui_screen_settings(void)
 
     for (int i = 1; i <= 6; i++) {
         lv_obj_t *row = lv_obj_create(cont);
-        lv_obj_set_size(row, 280, 40);
+        lv_obj_set_size(row, content_w() - 30, 40);
         lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
         lv_obj_set_style_border_width(row, 0, 0);
         lv_obj_set_style_pad_all(row, 2, 0);
@@ -444,7 +457,7 @@ static lv_obj_t *add_spinbox_row(lv_obj_t *parent, const char *name,
                                   int digits, int decimal_pos, param_binding_t *bind)
 {
     lv_obj_t *row = lv_obj_create(parent);
-    lv_obj_set_size(row, 280, 44);
+    lv_obj_set_size(row, content_w() - 30, 42);
     lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(row, 0, 0);
     lv_obj_set_style_pad_all(row, 2, 0);
@@ -490,8 +503,8 @@ lv_obj_t *ui_screen_profile_editor(void)
     profile_load(0, &s_edit_profile);
 
     lv_obj_t *cont = lv_obj_create(s_scr_profile_editor);
-    lv_obj_set_size(cont, 310, 350);
-    lv_obj_align(cont, LV_ALIGN_CENTER, 0, 20);
+    lv_obj_set_size(cont, content_w(), content_h());
+    lv_obj_align(cont, LV_ALIGN_BOTTOM_MID, 0, -8);
     lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_bg_color(cont, COL_CARD, 0);
     lv_obj_set_style_pad_row(cont, 4, 0);
@@ -633,12 +646,12 @@ lv_obj_t *ui_screen_calibration(void)
     lv_obj_t *info = lv_label_create(s_scr_calibration);
     lv_label_set_text(info, "Press Home, then adjust\nplatform height with UP/DOWN.\n100 steps per press.");
     lv_obj_set_style_text_color(info, COL_TEXT_DIM, 0);
-    lv_obj_align(info, LV_ALIGN_TOP_MID, 0, 50);
+    lv_obj_align(info, LV_ALIGN_TOP_MID, 0, 30);
 
     /* Home button */
     lv_obj_t *home_btn = lv_btn_create(s_scr_calibration);
-    lv_obj_set_size(home_btn, 200, 45);
-    lv_obj_align(home_btn, LV_ALIGN_CENTER, 0, -40);
+    lv_obj_set_size(home_btn, 200, 42);
+    lv_obj_align(home_btn, LV_ALIGN_CENTER, 0, -46);
     lv_obj_set_style_bg_color(home_btn, COL_ACCENT, 0);
     lv_obj_add_event_cb(home_btn, on_cal_home, LV_EVENT_CLICKED, NULL);
     lv_obj_t *home_lbl = lv_label_create(home_btn);
@@ -647,8 +660,8 @@ lv_obj_t *ui_screen_calibration(void)
 
     /* Up/Down buttons */
     lv_obj_t *up_btn = lv_btn_create(s_scr_calibration);
-    lv_obj_set_size(up_btn, 120, 45);
-    lv_obj_align(up_btn, LV_ALIGN_CENTER, -65, 20);
+    lv_obj_set_size(up_btn, 120, 42);
+    lv_obj_align(up_btn, LV_ALIGN_CENTER, -65, 6);
     lv_obj_set_style_bg_color(up_btn, COL_ACCENT, 0);
     lv_obj_add_event_cb(up_btn, on_cal_up, LV_EVENT_CLICKED, NULL);
     lv_obj_t *up_lbl = lv_label_create(up_btn);
@@ -656,8 +669,8 @@ lv_obj_t *ui_screen_calibration(void)
     lv_obj_center(up_lbl);
 
     lv_obj_t *down_btn = lv_btn_create(s_scr_calibration);
-    lv_obj_set_size(down_btn, 120, 45);
-    lv_obj_align(down_btn, LV_ALIGN_CENTER, 65, 20);
+    lv_obj_set_size(down_btn, 120, 42);
+    lv_obj_align(down_btn, LV_ALIGN_CENTER, 65, 6);
     lv_obj_set_style_bg_color(down_btn, COL_ACCENT, 0);
     lv_obj_add_event_cb(down_btn, on_cal_down, LV_EVENT_CLICKED, NULL);
     lv_obj_t *down_lbl = lv_label_create(down_btn);
@@ -668,12 +681,12 @@ lv_obj_t *ui_screen_calibration(void)
     s_cal_offset_label = lv_label_create(s_scr_calibration);
     lv_label_set_text(s_cal_offset_label, "Offset: 0 steps");
     lv_obj_set_style_text_color(s_cal_offset_label, COL_TEXT, 0);
-    lv_obj_align(s_cal_offset_label, LV_ALIGN_CENTER, 0, 80);
+    lv_obj_align(s_cal_offset_label, LV_ALIGN_CENTER, 0, 58);
 
     /* Save button */
     lv_obj_t *save_btn = lv_btn_create(s_scr_calibration);
-    lv_obj_set_size(save_btn, 200, 45);
-    lv_obj_align(save_btn, LV_ALIGN_BOTTOM_MID, 0, -20);
+    lv_obj_set_size(save_btn, 200, 42);
+    lv_obj_align(save_btn, LV_ALIGN_BOTTOM_MID, 0, -12);
     lv_obj_set_style_bg_color(save_btn, COL_GREEN, 0);
     lv_obj_add_event_cb(save_btn, on_cal_save, LV_EVENT_CLICKED, NULL);
     lv_obj_t *save_lbl = lv_label_create(save_btn);
@@ -687,23 +700,53 @@ lv_obj_t *ui_screen_calibration(void)
  *  Screen: Utilities
  * ══════════════════════════════════════════════════════════════════ */
 
-static void on_clean_vat(lv_event_t *e)
+/* Timed utilities run off esp_timer rather than blocking inside the LVGL
+ * event callback — a vTaskDelay here stalls the whole UI task (and the
+ * touch indev) for the duration. */
+static esp_timer_handle_t s_clean_vat_timer;
+static esp_timer_handle_t s_test_uv_timer;
+
+static esp_timer_handle_t get_oneshot(esp_timer_handle_t *slot,
+                                      esp_timer_cb_t cb, const char *name)
 {
-    /* Expose full white screen for 10s to cure remaining resin */
-    tft_set_rotation(2);
-    tft_fill_screen(0xFFFF);
-    uv_led_set_power(255);
-    vTaskDelay(pdMS_TO_TICKS(10000));
+    if (!*slot) {
+        const esp_timer_create_args_t args = { .callback = cb, .name = name };
+        esp_timer_create(&args, slot);
+    }
+    return *slot;
+}
+
+static void clean_vat_done(void *arg)
+{
     uv_led_off();
     tft_fill_screen(0x0000);
-    tft_set_rotation(3);
+    tft_set_rotation(UI_MENU_ROTATION);
+    ui_resume();
+    ESP_LOGI(TAG, "Clean vat cure finished");
+}
+
+static void on_clean_vat(lv_event_t *e)
+{
+    /* Expose full white screen for 10s to cure remaining resin.
+     * LVGL is suspended so it can't repaint over the cure mask. */
+    ui_suspend();
+    tft_set_rotation(UI_MASK_ROTATION);
+    tft_fill_screen(0xFFFF);
+    uv_led_set_power(255);
+    esp_timer_start_once(get_oneshot(&s_clean_vat_timer, clean_vat_done, "clean_vat"),
+                         10ULL * 1000 * 1000);
+}
+
+static void test_uv_done(void *arg)
+{
+    uv_led_off();
 }
 
 static void on_test_uv(lv_event_t *e)
 {
     uv_led_set_power(128);
-    vTaskDelay(pdMS_TO_TICKS(3000));
-    uv_led_off();
+    esp_timer_start_once(get_oneshot(&s_test_uv_timer, test_uv_done, "test_uv"),
+                         3ULL * 1000 * 1000);
 }
 
 static void on_motor_test(lv_event_t *e)
@@ -730,8 +773,8 @@ lv_obj_t *ui_screen_utilities(void)
     create_back_btn(s_scr_utilities, on_utils_back);
 
     lv_obj_t *cont = lv_obj_create(s_scr_utilities);
-    lv_obj_set_size(cont, 300, 340);
-    lv_obj_align(cont, LV_ALIGN_CENTER, 0, 20);
+    lv_obj_set_size(cont, content_w(), content_h());
+    lv_obj_align(cont, LV_ALIGN_BOTTOM_MID, 0, -8);
     lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(cont, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_bg_opa(cont, LV_OPA_TRANSP, 0);
@@ -836,8 +879,8 @@ lv_obj_t *ui_screen_wifi_status(void)
 
     /* Dynamic WiFi info — ideally updated from wifi_manager state */
     lv_obj_t *card = lv_obj_create(s_scr_wifi_status);
-    lv_obj_set_size(card, 300, 200);
-    lv_obj_align(card, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_size(card, content_w(), scr_h() - 90);
+    lv_obj_align(card, LV_ALIGN_BOTTOM_MID, 0, -12);
     lv_obj_set_style_bg_color(card, COL_CARD, 0);
     lv_obj_set_style_radius(card, 12, 0);
 
@@ -926,16 +969,17 @@ lv_obj_t *ui_screen_touch_test(void)
     /* Four colored quadrants to reveal display orientation.
      * LVGL coords: A=top-left, B=top-right, C=bottom-left, D=bottom-right.
      * Tell me which letter is at each PHYSICAL corner. */
-    static const struct { int x; int y; lv_color_t col; const char *lbl; } quads[] = {
-        {   0,   0, {.full = 0xF800}, "A"},  /* Red    - LVGL top-left     */
-        { 160,   0, {.full = 0x07E0}, "B"},  /* Green  - LVGL top-right    */
-        {   0, 213, {.full = 0x001F}, "C"},  /* Blue   - LVGL bottom-left  */
-        { 160, 213, {.full = 0xFFE0}, "D"},  /* Yellow - LVGL bottom-right */
+    const lv_coord_t qw = scr_w() / 2, qh = scr_h() / 2;
+    const struct { int x; int y; lv_color_t col; const char *lbl; } quads[] = {
+        {  0,  0, {.full = 0xF800}, "A"},  /* Red    - LVGL top-left     */
+        { qw,  0, {.full = 0x07E0}, "B"},  /* Green  - LVGL top-right    */
+        {  0, qh, {.full = 0x001F}, "C"},  /* Blue   - LVGL bottom-left  */
+        { qw, qh, {.full = 0xFFE0}, "D"},  /* Yellow - LVGL bottom-right */
     };
     for (int i = 0; i < 4; i++) {
         lv_obj_t *r = lv_obj_create(s_scr_touch_test);
         lv_obj_set_pos(r, quads[i].x, quads[i].y);
-        lv_obj_set_size(r, 160, 213);
+        lv_obj_set_size(r, qw, qh);
         lv_obj_set_style_bg_color(r, quads[i].col, 0);
         lv_obj_set_style_bg_opa(r, LV_OPA_50, 0);
         lv_obj_set_style_border_width(r, 0, 0);

@@ -1,11 +1,14 @@
 #include "ota_update.h"
 #include "esp_ota_ops.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include <string.h>
+#include <stdlib.h>
 
 static const char *TAG = "ota";
 
 #define OTA_BUF_SIZE    4096
+#define OTA_BUF_MIN     512
 
 static esp_err_t handler_ota(httpd_req_t *req)
 {
@@ -26,19 +29,30 @@ static esp_err_t handler_ota(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    char *buf = malloc(OTA_BUF_SIZE);
+    /* Heap is scarce on this board and OTA is the primary way to flash it,
+     * so settle for a smaller chunk rather than failing outright. */
+    size_t buf_size = OTA_BUF_SIZE;
+    char *buf = NULL;
+    while (!buf && buf_size >= OTA_BUF_MIN) {
+        buf = malloc(buf_size);
+        if (!buf) buf_size /= 2;
+    }
     if (!buf) {
+        ESP_LOGE(TAG, "No memory for OTA buffer (free heap %lu)",
+                 (unsigned long)esp_get_free_heap_size());
         esp_ota_abort(ota_handle);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "No memory");
         return ESP_FAIL;
     }
+    ESP_LOGI(TAG, "OTA buffer %u bytes, free heap %lu",
+             (unsigned)buf_size, (unsigned long)esp_get_free_heap_size());
 
     int total_read = 0;
     int remaining = req->content_len;
 
     while (remaining > 0) {
         int recv_len = httpd_req_recv(req, buf,
-            remaining > OTA_BUF_SIZE ? OTA_BUF_SIZE : remaining);
+            remaining > (int)buf_size ? (int)buf_size : remaining);
         if (recv_len <= 0) {
             ESP_LOGE(TAG, "OTA receive error");
             free(buf);
