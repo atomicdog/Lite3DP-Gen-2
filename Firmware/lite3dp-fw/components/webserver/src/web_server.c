@@ -586,7 +586,9 @@ static const char *WEB_UI_HTML =
     "if(!r.ok){document.getElementById('screen').alt="
     "(r.status===401?'enter the access key above':'screen busy (printing)');return}"
     "const b=new DataView(await r.arrayBuffer());"
-    "if(b.byteLength<8||b.getUint32(0,false)!==0x4C333450){return}"  /* 'L3DP' */
+    /* 'L' 0x4C, '3' 0x33, 'D' 0x44, 'P' 0x50 */
+    "if(b.byteLength<8||b.getUint32(0,false)!==0x4C334450){"
+    "document.getElementById('screen').alt='bad screenshot header';return}"
     "const w=b.getUint16(4,true),h=b.getUint16(6,true);"
     "const cv=document.createElement('canvas');cv.width=w;cv.height=h;"
     "const cx=cv.getContext('2d'),im=cx.createImageData(w,h);"
