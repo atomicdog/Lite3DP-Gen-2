@@ -144,8 +144,9 @@ static esp_err_t handler_motor_off(httpd_req_t *req)
 /* ── POST /api/uv  {duty, seconds, mask} ───────────────────────── */
 /* The LED shines through the masking LCD, so with the menu on screen a
  * "UV test" is mostly blocked by dark pixels and looks dead even when the
- * LED is driven. mask=true (the default) whitens the panel first, which
- * tests the actual exposure path. */
+ * LED is driven — the panel is whitened first by default. "mask": false
+ * keeps it closed, which drives the LED without exposing the vat; kept as
+ * a bench-testing escape hatch, not offered in the web UI. */
 
 static bool s_uv_mask_open;
 
