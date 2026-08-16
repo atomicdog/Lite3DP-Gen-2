@@ -151,6 +151,95 @@ esp_err_t wifi_connect_sta(const char *ssid, const char *password)
     return ESP_FAIL;
 }
 
+/* ── Live credential change with rollback ──────────────────────── */
+
+static volatile wifi_apply_state_t s_apply_state = WIFI_APPLY_IDLE;
+static char s_pending_ssid[33];
+static char s_pending_pass[65];
+
+/* Stop the radio and clear stale connect/fail bits so the next attempt
+ * waits on its own result rather than the previous one's. */
+static void radio_reset(void)
+{
+    esp_wifi_stop();
+    xEventGroupClearBits(s_wifi_events, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
+    s_retry_count = 0;
+}
+
+static void wifi_apply_task(void *arg)
+{
+    /* Give the HTTP response time to leave the socket before the radio
+     * that carries it goes down. */
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    ESP_LOGI(TAG, "Applying new credentials for SSID: %s", s_pending_ssid);
+    radio_reset();
+
+    if (wifi_connect_sta(s_pending_ssid, s_pending_pass) == ESP_OK) {
+        /* Only persist once proven — a bad password must not survive a reboot */
+        wifi_save_credentials(s_pending_ssid, s_pending_pass);
+        s_apply_state = WIFI_APPLY_OK;
+        ESP_LOGI(TAG, "New network joined, IP %s", s_ip_str);
+    } else {
+        ESP_LOGW(TAG, "New credentials failed — rolling back");
+        radio_reset();
+
+        char old_ssid[33] = {0}, old_pass[65] = {0};
+        bool restored = false;
+        if (wifi_load_credentials(old_ssid, sizeof(old_ssid), old_pass, sizeof(old_pass))) {
+            restored = (wifi_connect_sta(old_ssid, old_pass) == ESP_OK);
+            if (restored) {
+                ESP_LOGI(TAG, "Rolled back to %s, IP %s", old_ssid, s_ip_str);
+            } else {
+                radio_reset();
+            }
+        }
+        if (!restored) {
+            ESP_LOGW(TAG, "Falling back to AP mode");
+            wifi_start_ap(CONFIG_LITE3DP_DEFAULT_AP_SSID, CONFIG_LITE3DP_DEFAULT_AP_PASS);
+        }
+        s_apply_state = WIFI_APPLY_ROLLED_BACK;
+    }
+
+    /* Don't leave the password sitting in RAM */
+    memset(s_pending_ssid, 0, sizeof(s_pending_ssid));
+    memset(s_pending_pass, 0, sizeof(s_pending_pass));
+
+    vTaskDelete(NULL);
+}
+
+esp_err_t wifi_apply_credentials(const char *ssid, const char *password)
+{
+    if (s_apply_state == WIFI_APPLY_IN_PROGRESS) return ESP_ERR_INVALID_STATE;
+    if (!ssid || ssid[0] == '\0' || strlen(ssid) >= sizeof(s_pending_ssid)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (password && strlen(password) >= sizeof(s_pending_pass)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    strncpy(s_pending_ssid, ssid, sizeof(s_pending_ssid) - 1);
+    s_pending_ssid[sizeof(s_pending_ssid) - 1] = '\0';
+    s_pending_pass[0] = '\0';
+    if (password) {
+        strncpy(s_pending_pass, password, sizeof(s_pending_pass) - 1);
+        s_pending_pass[sizeof(s_pending_pass) - 1] = '\0';
+    }
+
+    s_apply_state = WIFI_APPLY_IN_PROGRESS;
+
+    if (xTaskCreate(wifi_apply_task, "wifi_apply", 4096, NULL, 5, NULL) != pdPASS) {
+        s_apply_state = WIFI_APPLY_IDLE;
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
+}
+
+wifi_apply_state_t wifi_get_apply_state(void)
+{
+    return s_apply_state;
+}
+
 wifi_state_t wifi_get_state(void)
 {
     return s_state;

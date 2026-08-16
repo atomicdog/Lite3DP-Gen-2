@@ -78,6 +78,15 @@ static esp_err_t handler_status(httpd_req_t *req)
     default:                          wifi_mode = "idle"; break;
     }
     cJSON_AddStringToObject(j, "wifiMode", wifi_mode);
+
+    const char *apply_str;
+    switch (wifi_get_apply_state()) {
+    case WIFI_APPLY_IN_PROGRESS: apply_str = "applying"; break;
+    case WIFI_APPLY_OK:          apply_str = "ok"; break;
+    case WIFI_APPLY_ROLLED_BACK: apply_str = "rolledBack"; break;
+    default:                     apply_str = "idle"; break;
+    }
+    cJSON_AddStringToObject(j, "wifiApply", apply_str);
     cJSON_AddStringToObject(j, "ip", wifi_get_ip_str());
     cJSON_AddNumberToObject(j, "freeHeap", esp_get_free_heap_size());
     cJSON_AddNumberToObject(j, "uptimeMs", esp_timer_get_time() / 1000);
@@ -374,18 +383,39 @@ static esp_err_t handler_wifi_config(httpd_req_t *req)
         return ESP_FAIL;
     }
 
-    const char *ssid = ssid_item->valuestring;
-    const char *pass = cJSON_IsString(pass_item) ? pass_item->valuestring : "";
-
-    wifi_save_credentials(ssid, pass);
+    /* Copy out before freeing the parsed body — the apply runs after we
+     * have already answered. */
+    char ssid[33] = {0}, pass[65] = {0};
+    strncpy(ssid, ssid_item->valuestring, sizeof(ssid) - 1);
+    if (cJSON_IsString(pass_item)) {
+        strncpy(pass, pass_item->valuestring, sizeof(pass) - 1);
+    }
     cJSON_Delete(body);
 
-    ESP_LOGI(TAG, "WiFi credentials saved, restart to connect");
+    if (wifi_get_apply_state() == WIFI_APPLY_IN_PROGRESS) {
+        httpd_resp_set_status(req, "409 Conflict");
+        cJSON *busy = cJSON_CreateObject();
+        cJSON_AddStringToObject(busy, "status", "error");
+        cJSON_AddStringToObject(busy, "message", "a WiFi change is already in progress");
+        return send_json(req, busy);
+    }
 
+    /* Answer first: applying takes the radio down, and on success the
+     * printer lands on a different network where this socket is gone. */
+    httpd_resp_set_status(req, "202 Accepted");
     cJSON *resp = cJSON_CreateObject();
-    cJSON_AddStringToObject(resp, "status", "saved");
-    cJSON_AddStringToObject(resp, "message", "Restart to connect to new network");
-    return send_json(req, resp);
+    cJSON_AddStringToObject(resp, "status", "applying");
+    cJSON_AddStringToObject(resp, "message",
+        "Connecting to the new network. On success the printer moves to that "
+        "network (find it at http://" CONFIG_LITE3DP_MDNS_HOSTNAME ".local); "
+        "on failure it returns to the previous network or its own AP.");
+    send_json(req, resp);
+
+    esp_err_t ret = wifi_apply_credentials(ssid, pass);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Could not start WiFi apply: %s", esp_err_to_name(ret));
+    }
+    return ESP_OK;
 }
 
 /* ── GET / — Serve web UI ──────────────────────────────────────── */
@@ -496,7 +526,8 @@ static const char *WEB_UI_HTML =
     "<h2>WiFi Settings</h2>"
     "<label>SSID</label><input type='text' id='wssid'>"
     "<label>Password</label><input type='password' id='wpass'>"
-    "<br><button class='btn' onclick='saveWifi()' style='margin-top:10px'>Save & Restart</button>"
+    "<br><button class='btn' onclick='saveWifi()' style='margin-top:10px'>Connect</button>"
+    "<div id='wifistatus' style='margin-top:10px;color:#888'></div>"
     "</div>"
     /* ── OTA card ── */
     "<div class='card'>"
@@ -614,9 +645,23 @@ static const char *WEB_UI_HTML =
     /* WiFi config */
     "async function saveWifi(){"
     "const s=document.getElementById('wssid').value,p=document.getElementById('wpass').value;"
-    "if(!s){alert('Enter SSID');return}"
+    "const st=document.getElementById('wifistatus');"
+    "if(!s){st.textContent='Enter an SSID';return}"
     "const r=await api('POST','/api/wifi/config',{ssid:s,password:p});"
-    "alert(r.message||'Saved')}"
+    "if(r.status!=='applying'){st.textContent=r.message||'failed';return}"
+    /* The radio drops here; if it succeeds this page is on the wrong
+       network and polling simply stops, which is itself the signal. */
+    "st.textContent='Connecting...';"
+    "let n=0;const t=setInterval(async()=>{n++;"
+    "try{const s2=await api('GET','/api/status');"
+    "if(s2.wifiApply==='ok'){clearInterval(t);"
+    "st.textContent='Connected as '+s2.ip+' — reachable at http://lite3dp.local'}"
+    "else if(s2.wifiApply==='rolledBack'){clearInterval(t);"
+    "st.textContent='Failed — rolled back to the previous network ('+s2.ip+')'}"
+    "}catch(e){if(n>20){clearInterval(t);"
+    "st.textContent='Printer left this network — it likely joined the new one. "
+    "Reconnect and open http://lite3dp.local'}}"
+    "},2000)}"
     /* OTA update */
     "async function doOta(){"
     "const f=document.getElementById('otafile').files[0];"

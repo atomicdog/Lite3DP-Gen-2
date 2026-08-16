@@ -26,6 +26,30 @@ wifi_state_t wifi_get_state(void);
 /** Get the current IP address as a string. */
 const char *wifi_get_ip_str(void);
 
+typedef enum {
+    WIFI_APPLY_IDLE,
+    WIFI_APPLY_IN_PROGRESS,
+    WIFI_APPLY_OK,
+    WIFI_APPLY_ROLLED_BACK,
+} wifi_apply_state_t;
+
+/**
+ * Switch to new credentials without rebooting, rolling back if they fail.
+ *
+ * Returns immediately; the work happens on a short-lived task so the HTTP
+ * response reaches the client before the radio changes underneath it.
+ * The new credentials are written to NVS *only* once a connection
+ * succeeds, so a typo can never strand the printer across a reboot. On
+ * failure it reconnects with the previously saved credentials, or falls
+ * back to AP mode if there are none.
+ *
+ * @return ESP_ERR_INVALID_STATE if an apply is already running.
+ */
+esp_err_t wifi_apply_credentials(const char *ssid, const char *password);
+
+/** Outcome of the last wifi_apply_credentials() call. */
+wifi_apply_state_t wifi_get_apply_state(void);
+
 /** Save WiFi credentials to NVS. */
 esp_err_t wifi_save_credentials(const char *ssid, const char *password);
 
