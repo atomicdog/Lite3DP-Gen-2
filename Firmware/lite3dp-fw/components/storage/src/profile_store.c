@@ -70,6 +70,31 @@ esp_err_t profile_load(int slot, print_profile_t *profile)
     return ESP_OK;
 }
 
+bool profile_exists(int slot)
+{
+    if (slot < 0 || slot >= PROFILE_SLOT_COUNT) return false;
+
+    nvs_handle_t nvs;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) return false;
+
+    char key[16];
+    snprintf(key, sizeof(key), "%s%d", NVS_KEY_PREFIX, slot);
+
+    size_t len = 0;
+    esp_err_t ret = nvs_get_blob(nvs, key, NULL, &len);   /* size probe */
+    nvs_close(nvs);
+
+    return ret == ESP_OK && len == sizeof(print_profile_t);
+}
+
+bool profile_equal(const print_profile_t *a, const print_profile_t *b)
+{
+    if (!a || !b) return false;
+    /* Plain struct of scalars with no padding gaps worth worrying about,
+     * and both sides come from the same NVS blob layout. */
+    return memcmp(a, b, sizeof(print_profile_t)) == 0;
+}
+
 esp_err_t profile_save(int slot, const print_profile_t *profile)
 {
     if (slot < 0 || slot >= PROFILE_SLOT_COUNT) return ESP_ERR_INVALID_ARG;

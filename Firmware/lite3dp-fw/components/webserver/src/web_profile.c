@@ -126,6 +126,43 @@ static const char *profile_validate(const print_profile_t *p)
     return NULL;
 }
 
+/* Which saved slot the active profile came from.
+ *
+ * Derived by comparison rather than remembered: loading a slot copies its
+ * bytes into slot 0 and nothing records the origin, so a stored "current
+ * slot" would go stale the moment someone edited a field. Comparing means
+ * an edit simply stops matching, which is exactly the "modified" state we
+ * want to show. Empty slots are excluded — they read back as defaults and
+ * would otherwise match any untouched profile.
+ *
+ * @return 1-6, or 0 when the active profile matches no saved slot.
+ */
+static int active_matching_slot(const print_profile_t *active)
+{
+    for (int slot = 1; slot < PROFILE_SLOT_COUNT; slot++) {
+        if (!profile_exists(slot)) continue;
+
+        print_profile_t candidate;
+        if (profile_load(slot, &candidate) != ESP_OK) continue;
+        if (profile_equal(active, &candidate)) return slot;
+    }
+    return 0;
+}
+
+/* Report the slot match plus which slots hold anything, so the UI can
+ * label the active profile and grey out empty slots. */
+static void add_slot_info(cJSON *j, const print_profile_t *active)
+{
+    cJSON_AddNumberToObject(j, "matchingSlot", active_matching_slot(active));
+
+    cJSON *used = cJSON_AddArrayToObject(j, "slotsUsed");
+    for (int slot = 1; slot < PROFILE_SLOT_COUNT; slot++) {
+        if (profile_exists(slot)) {
+            cJSON_AddItemToArray(used, cJSON_CreateNumber(slot));
+        }
+    }
+}
+
 /* ── GET /api/profile — the active profile ─────────────────────── */
 
 static esp_err_t handler_profile_get(httpd_req_t *req)
@@ -136,6 +173,7 @@ static esp_err_t handler_profile_get(httpd_req_t *req)
     cJSON *j = cJSON_CreateObject();
     cJSON_AddNumberToObject(j, "slot", 0);
     profile_to_json(&p, j);
+    add_slot_info(j, &p);
     return send_json_owned(req, j);
 }
 
@@ -167,6 +205,7 @@ static esp_err_t handler_profile_post(httpd_req_t *req)
     cJSON *j = cJSON_CreateObject();
     cJSON_AddStringToObject(j, "status", "ok");
     profile_to_json(&p, j);
+    add_slot_info(j, &p);
     return send_json_owned(req, j);
 }
 
@@ -219,6 +258,7 @@ static esp_err_t handler_profile_slot(httpd_req_t *req)
     cJSON_AddNumberToObject(j, "slot", slot);
     cJSON_AddStringToObject(j, "action", load ? "load" : "save");
     profile_to_json(&p, j);
+    add_slot_info(j, &p);
     return send_json_owned(req, j);
 }
 

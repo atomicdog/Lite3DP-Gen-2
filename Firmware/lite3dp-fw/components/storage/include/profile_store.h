@@ -2,6 +2,7 @@
 
 #include "esp_err.h"
 #include <stdint.h>
+#include <stdbool.h>
 
 #define PROFILE_SLOT_COUNT  7   /* 0=active, 1-6=saved (A-F) */
 
@@ -24,8 +25,19 @@ typedef struct {
 /** Initialize the profile store (NVS). */
 esp_err_t profile_store_init(void);
 
-/** Load a profile from NVS. Slot 0 = active, 1-6 = saved A-F. */
+/**
+ * Load a profile from NVS. Slot 0 = active, 1-6 = saved A-F.
+ * A slot that was never written yields factory defaults and still
+ * reports ESP_OK — use profile_exists() to tell the two apart.
+ */
 esp_err_t profile_load(int slot, print_profile_t *profile);
+
+/** True if this slot has actually been written (as opposed to reading
+ *  back defaults because it is empty). */
+bool profile_exists(int slot);
+
+/** True if two profiles are field-for-field identical. */
+bool profile_equal(const print_profile_t *a, const print_profile_t *b);
 
 /** Save a profile to NVS. */
 esp_err_t profile_save(int slot, const print_profile_t *profile);
