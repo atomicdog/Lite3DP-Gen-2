@@ -10,5 +10,5 @@ idf_component_register(
     REQUIRES
         esp_wifi esp_http_server esp_event mdns nvs_flash
         app_update json freertos esp_netif esp_timer
-        print_engine storage ui lite3dp_hal
+        print_engine storage ui display lite3dp_hal
 )

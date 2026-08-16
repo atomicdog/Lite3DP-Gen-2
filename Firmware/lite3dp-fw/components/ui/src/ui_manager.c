@@ -21,7 +21,7 @@ static const char *TAG = "ui";
 #define UI_REFRESH_MS   33      /* ~30 Hz screen refresh */
 
 /* Menu runs landscape (rotation 3): 480 wide x 320 tall */
-#define UI_ROTATION    3
+#define UI_MENU_ROTATION    3
 
 /* LVGL draw buffer — two partial buffers for DMA ping-pong.
  * 10 lines at 480 wide costs 19 KB of static RAM for the pair; going wider
@@ -120,7 +120,7 @@ static void print_monitor_task(void *arg)
 
         /* Print ended — turn off backlight and restore LVGL */
         backlight_set(0);
-        tft_set_rotation(UI_ROTATION);
+        tft_set_rotation(UI_MENU_ROTATION);
         ui_resume();
 
         if (bits & PRINT_EVT_FINISHED) {
@@ -166,7 +166,7 @@ esp_err_t ui_init(QueueHandle_t input_queue)
     }
 
     /* Menu orientation must be set before LVGL learns the resolution */
-    tft_set_rotation(UI_ROTATION);
+    tft_set_rotation(UI_MENU_ROTATION);
 
     /* Initialize LVGL */
     lv_init();

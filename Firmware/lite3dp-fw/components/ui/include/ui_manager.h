@@ -4,6 +4,11 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 
+/* Panel orientation: the UI runs landscape, the exposure mask portrait
+ * (mirrored, since it is viewed through the panel from the vat side). */
+#define UI_MENU_ROTATION    3
+#define UI_MASK_ROTATION    2
+
 typedef enum {
     SCREEN_MAIN_MENU,
     SCREEN_FILE_BROWSER,

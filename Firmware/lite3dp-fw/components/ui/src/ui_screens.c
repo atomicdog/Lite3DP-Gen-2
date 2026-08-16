@@ -32,9 +32,6 @@ static const char *TAG = "ui_scr";
 /* Screens run landscape (480x320). Derive sizes from the live display
  * so a rotation change doesn't strand hard-coded coordinates. */
 
-#define UI_MENU_ROTATION    3
-#define UI_MASK_ROTATION    2
-
 static inline lv_coord_t scr_w(void) { return lv_disp_get_hor_res(NULL); }
 static inline lv_coord_t scr_h(void) { return lv_disp_get_ver_res(NULL); }
 
@@ -740,10 +737,19 @@ static void on_clean_vat(lv_event_t *e)
 static void test_uv_done(void *arg)
 {
     uv_led_off();
+    tft_fill_screen(0x0000);
+    tft_set_rotation(UI_MENU_ROTATION);
+    ui_resume();
+    ESP_LOGI(TAG, "UV test finished");
 }
 
 static void on_test_uv(lv_event_t *e)
 {
+    /* Open the mask: the LED shines through this panel, so testing with
+     * the dark menu on screen mostly proves nothing. */
+    ui_suspend();
+    tft_set_rotation(UI_MASK_ROTATION);
+    tft_fill_screen(0xFFFF);
     uv_led_set_power(128);
     esp_timer_start_once(get_oneshot(&s_test_uv_timer, test_uv_done, "test_uv"),
                          3ULL * 1000 * 1000);
@@ -782,7 +788,7 @@ lv_obj_t *ui_screen_utilities(void)
     lv_obj_set_style_pad_row(cont, 15, 0);
 
     create_menu_btn(cont, "Clean Vat (10s cure)", on_clean_vat);
-    create_menu_btn(cont, "Test UV LED (3s)", on_test_uv);
+    create_menu_btn(cont, "Test UV LED (3s, white mask)", on_test_uv);
     create_menu_btn(cont, "Motor Test (5mm lift)", on_motor_test);
 
     return s_scr_utilities;

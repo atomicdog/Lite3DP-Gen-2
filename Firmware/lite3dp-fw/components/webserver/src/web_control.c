@@ -7,6 +7,8 @@
 #include "print_engine.h"
 #include "hal_motor.h"
 #include "hal_uv_led.h"
+#include "ui_manager.h"
+#include "tft_driver.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -139,11 +141,27 @@ static esp_err_t handler_motor_off(httpd_req_t *req)
     return send_json_owned(req, j);
 }
 
-/* ── POST /api/uv  {duty: 0-255, seconds: float} ───────────────── */
+/* ── POST /api/uv  {duty, seconds, mask} ───────────────────────── */
+/* The LED shines through the masking LCD, so with the menu on screen a
+ * "UV test" is mostly blocked by dark pixels and looks dead even when the
+ * LED is driven. mask=true (the default) whitens the panel first, which
+ * tests the actual exposure path. */
+
+static bool s_uv_mask_open;
+
+static void uv_close_mask(void)
+{
+    if (!s_uv_mask_open) return;
+    tft_fill_screen(0x0000);
+    tft_set_rotation(UI_MENU_ROTATION);
+    ui_resume();
+    s_uv_mask_open = false;
+}
 
 static void uv_timeout_cb(void *arg)
 {
     uv_led_off();
+    uv_close_mask();
     ESP_LOGI(TAG, "UV timeout — off");
 }
 
@@ -159,6 +177,8 @@ static esp_err_t handler_uv(httpd_req_t *req)
 
     double duty    = json_num(body, "duty", 0.0);
     double seconds = json_num(body, "seconds", 3.0);
+    const cJSON *mask_item = cJSON_GetObjectItem(body, "mask");
+    bool open_mask = cJSON_IsBool(mask_item) ? cJSON_IsTrue(mask_item) : true;
     cJSON_Delete(body);
 
     if (duty < 0.0 || duty > 255.0) {
@@ -177,16 +197,26 @@ static esp_err_t handler_uv(httpd_req_t *req)
 
     if (duty == 0.0) {
         uv_led_off();
+        uv_close_mask();
     } else {
+        if (open_mask && !s_uv_mask_open) {
+            /* Suspend LVGL so it can't repaint the menu over the mask */
+            ui_suspend();
+            tft_set_rotation(UI_MASK_ROTATION);
+            tft_fill_screen(0xFFFF);
+            s_uv_mask_open = true;
+        }
         uv_led_set_power((uint8_t)duty);
         esp_timer_start_once(s_uv_timer, (uint64_t)(seconds * 1000000.0));
     }
 
-    ESP_LOGI(TAG, "UV duty=%d for %.1fs", (int)duty, seconds);
+    ESP_LOGI(TAG, "UV duty=%d for %.1fs (mask %s)", (int)duty, seconds,
+             s_uv_mask_open ? "open" : "closed");
     cJSON *j = cJSON_CreateObject();
     cJSON_AddStringToObject(j, "status", "ok");
     cJSON_AddNumberToObject(j, "duty", duty);
     cJSON_AddNumberToObject(j, "seconds", seconds);
+    cJSON_AddBoolToObject(j, "mask", s_uv_mask_open);
     return send_json_owned(req, j);
 }
 
