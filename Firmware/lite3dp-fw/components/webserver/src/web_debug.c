@@ -3,6 +3,7 @@
  * See tools/view_screen.py for the client side. */
 
 #include "web_debug.h"
+#include "api_key.h"
 #include "ui_manager.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
@@ -47,6 +48,10 @@ static esp_err_t capture_sink(void *ctx, uint16_t x1, uint16_t y1,
 
 static esp_err_t handler_screenshot(httpd_req_t *req)
 {
+    /* Authenticated even though it only reads: the WiFi Status screen
+     * displays the access key, so an open screenshot would hand it out. */
+    if (!api_key_check(req)) return ESP_OK;
+
     uint16_t w = 0, h = 0;
 
     /* Geometry first so the client can size its image before pixels arrive */
@@ -86,6 +91,8 @@ static esp_err_t handler_screenshot(httpd_req_t *req)
 
 static esp_err_t handler_ui_nav(httpd_req_t *req)
 {
+    if (!api_key_check(req)) return ESP_OK;
+
     char query[64];
     char val[16];
 

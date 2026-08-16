@@ -14,7 +14,7 @@ Areas may arrive in any order; they are composited into the image.
 """
 
 import argparse
-import io
+import os
 import struct
 import sys
 import time
@@ -38,9 +38,13 @@ def rgb565_be_to_rgb(buf):
     return out
 
 
-def fetch_screen(host, timeout=20):
+def auth_headers(key):
+    return {"X-Api-Key": key} if key else {}
+
+
+def fetch_screen(host, key=None, timeout=20):
     url = f"http://{host}/api/screenshot"
-    resp = requests.get(url, timeout=timeout)
+    resp = requests.get(url, headers=auth_headers(key), timeout=timeout)
     if resp.status_code == 409:
         raise RuntimeError("printer is mid-print; the panel is showing the mask")
     resp.raise_for_status()
@@ -73,9 +77,9 @@ def fetch_screen(host, timeout=20):
     return img
 
 
-def navigate(host, screen, timeout=10):
+def navigate(host, screen, key=None, timeout=10):
     r = requests.get(f"http://{host}/api/ui/nav", params={"screen": screen},
-                     timeout=timeout)
+                     headers=auth_headers(key), timeout=timeout)
     r.raise_for_status()
     print(f"navigated: {r.text}", file=sys.stderr)
 
@@ -92,15 +96,18 @@ def main():
                     help="re-capture every SEC seconds until interrupted")
     ap.add_argument("--no-show", action="store_true",
                     help="just write the file, don't open a viewer")
+    ap.add_argument("--key", default=os.environ.get("LITE3DP_KEY", ""),
+                    help="API key (or set LITE3DP_KEY); shown on the printer's "
+                         "WiFi Status screen. Only needed for mutating calls.")
     args = ap.parse_args()
 
     if args.nav is not None:
-        navigate(args.host, args.nav)
+        navigate(args.host, args.nav, args.key)
         time.sleep(0.3)
 
     while True:
         try:
-            img = fetch_screen(args.host)
+            img = fetch_screen(args.host, args.key)
             img.save(args.out)
             print(f"wrote {args.out}", file=sys.stderr)
             if not args.no_show and not args.loop:

@@ -4,6 +4,7 @@ idf_component_register(
         "src/web_server.c"
         "src/web_debug.c"
         "src/web_control.c"
+        "src/api_key.c"
         "src/ota_update.c"
     INCLUDE_DIRS "include"
     REQUIRES

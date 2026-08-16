@@ -1,4 +1,5 @@
 #include "ota_update.h"
+#include "api_key.h"
 #include "esp_ota_ops.h"
 #include "esp_log.h"
 #include "esp_system.h"
@@ -12,6 +13,8 @@ static const char *TAG = "ota";
 
 static esp_err_t handler_ota(httpd_req_t *req)
 {
+    if (!api_key_check(req)) return ESP_OK;
+
     ESP_LOGI(TAG, "OTA update starting (size=%d)", req->content_len);
 
     const esp_partition_t *update_part = esp_ota_get_next_update_partition(NULL);

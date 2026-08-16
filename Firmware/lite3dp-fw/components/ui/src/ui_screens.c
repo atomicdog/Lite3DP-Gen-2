@@ -861,6 +861,20 @@ void ui_screen_print_done_set_results(int layers, int elapsed_s)
 
 static void on_wifi_back(lv_event_t *e) { ui_navigate(SCREEN_MAIN_MENU); }
 
+#ifdef CONFIG_LITE3DP_WIFI_ENABLED
+/* Physical access is the recovery path for a lost key: press this, read
+ * the new one off the screen. */
+static void on_reset_api_key(lv_event_t *e)
+{
+    extern esp_err_t api_key_regenerate(void);
+    if (api_key_regenerate() == ESP_OK) {
+        ESP_LOGI(TAG, "API key reset from UI");
+    }
+    /* Rebuild the screen so the new key is displayed */
+    ui_navigate(SCREEN_WIFI_STATUS);
+}
+#endif
+
 lv_obj_t *ui_screen_wifi_status(void)
 {
     if (s_scr_wifi_status) {
@@ -895,6 +909,7 @@ lv_obj_t *ui_screen_wifi_status(void)
     } ui_wifi_state_t;
     extern const char *wifi_get_ip_str(void);
     extern int wifi_get_state(void);
+    extern const char *api_key_get(void);
 
     ui_wifi_state_t state = (ui_wifi_state_t)wifi_get_state();
     const char *ip = wifi_get_ip_str();
@@ -907,14 +922,16 @@ lv_obj_t *ui_screen_wifi_status(void)
     default:                        mode_str = "Idle"; break;
     }
 
-    char info_buf[200];
+    /* The key is deliberately only readable here, on the machine itself —
+     * it is never served with the web page. */
+    char info_buf[256];
     snprintf(info_buf, sizeof(info_buf),
         "Mode: %s\n"
-        "IP: %s\n\n"
-        "Web UI:\n"
-        "http://%s\n"
-        "http://lite3dp.local",
-        mode_str, ip, ip);
+        "IP: %s\n"
+        "Web UI: http://%s  |  http://lite3dp.local\n\n"
+        "Access key (type into web UI):\n"
+        "%s",
+        mode_str, ip, ip, api_key_get());
 
     lv_obj_t *info = lv_label_create(card);
     lv_label_set_text(info, info_buf);
@@ -925,6 +942,17 @@ lv_obj_t *ui_screen_wifi_status(void)
 
     lv_obj_set_style_text_color(info, COL_TEXT, 0);
     lv_obj_align(info, LV_ALIGN_TOP_LEFT, 10, 10);
+
+#ifdef CONFIG_LITE3DP_WIFI_ENABLED
+    lv_obj_t *reset_btn = lv_btn_create(s_scr_wifi_status);
+    lv_obj_set_size(reset_btn, 150, 34);
+    lv_obj_align(reset_btn, LV_ALIGN_TOP_RIGHT, -10, 8);
+    lv_obj_set_style_bg_color(reset_btn, COL_HIGHLIGHT, 0);
+    lv_obj_add_event_cb(reset_btn, on_reset_api_key, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *reset_lbl = lv_label_create(reset_btn);
+    lv_label_set_text(reset_lbl, "New Key");
+    lv_obj_center(reset_lbl);
+#endif
 
     return s_scr_wifi_status;
 }

@@ -31,6 +31,7 @@
 #ifdef CONFIG_LITE3DP_WIFI_ENABLED
 #include "wifi_manager.h"
 #include "web_server.h"
+#include "api_key.h"
 #endif
 
 static const char *TAG = "main";
@@ -114,6 +115,10 @@ void app_main(void)
 
 #ifdef CONFIG_LITE3DP_WIFI_ENABLED
     ESP_ERROR_CHECK(wifi_manager_init());
+
+    /* After wifi_manager_init: esp_random() needs the RF subsystem running
+     * to be a true RNG, and a predictable first key would defeat the point. */
+    ESP_ERROR_CHECK(api_key_init());
 
     /* Try saved credentials first, fall back to AP */
     char ssid[33] = {0}, pass[65] = {0};

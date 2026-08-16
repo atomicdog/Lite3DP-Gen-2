@@ -1,6 +1,7 @@
 #include "web_server.h"
 #include "web_debug.h"
 #include "web_control.h"
+#include "api_key.h"
 #include "ota_update.h"
 #include "wifi_manager.h"
 #include "print_engine.h"
@@ -145,6 +146,8 @@ static esp_err_t handler_profiles_get(httpd_req_t *req)
 
 static esp_err_t handler_print_start(httpd_req_t *req)
 {
+    if (!api_key_check(req)) return ESP_OK;
+
     char buf[256];
     int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (len <= 0) {
@@ -252,6 +255,8 @@ static bool is_safe_path_element(const char *s)
 
 static esp_err_t handler_upload(httpd_req_t *req)
 {
+    if (!api_key_check(req)) return ESP_OK;
+
     /* Get target directory from query param */
     char query[128] = {0};
     char dir_name[64] = {0};
@@ -345,6 +350,8 @@ static esp_err_t handler_upload(httpd_req_t *req)
 
 static esp_err_t handler_wifi_config(httpd_req_t *req)
 {
+    if (!api_key_check(req)) return ESP_OK;
+
     char buf[256];
     int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
     if (len <= 0) {
@@ -414,6 +421,18 @@ static const char *WEB_UI_HTML =
     ".upload-progress.active{display:block}"
     "</style></head><body>"
     "<h1>Lite3DP Gen 2</h1>"
+    /* ── API key card ── */
+    "<div class='card'>"
+    "<h2>Access Key</h2>"
+    "<div style='color:#888;font-size:13px;margin-bottom:8px'>"
+    "Shown on the printer's WiFi Status screen. Stored in this browser only."
+    "</div>"
+    "<input type='password' id='apikey' placeholder='paste key from printer screen'>"
+    "<div style='margin-top:10px'>"
+    "<button class='btn' onclick='saveKey()'>Save Key</button>"
+    "<button class='btn' onclick='rotateKey()'>Rotate Key</button>"
+    "<span id='keystatus' style='margin-left:10px;color:#888'></span>"
+    "</div></div>"
     /* ── Status card ── */
     "<div class='card'>"
     "<h2>Printer Status</h2>"
@@ -488,7 +507,9 @@ static const char *WEB_UI_HTML =
     "</div>"
     /* ── JavaScript ── */
     "<script>"
-    "async function api(m,u,b){const r=await fetch(u,{method:m,headers:{'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined});return r.json()}"
+    "async function api(m,u,b){const r=await fetch(u,{method:m,"
+    "headers:{'Content-Type':'application/json','X-Api-Key':getKey()},"
+    "body:b?JSON.stringify(b):undefined});return r.json()}"
     "function printCmd(c){api('POST','/api/print/'+c)}"
     /* Status polling */
     "async function poll(){"
@@ -528,15 +549,30 @@ static const char *WEB_UI_HTML =
     "stat.textContent='Uploading '+f.name+' ('+(done+1)+'/'+files.length+')';"
     "bar.style.width=Math.round(done/files.length*100)+'%';"
     "try{const r=await fetch('/api/upload?path='+encodeURIComponent(dir),"
-    "{method:'POST',headers:{'X-Filename':f.name,'Content-Type':'application/octet-stream'},body:f});"
+    "{method:'POST',headers:{'X-Filename':f.name,'X-Api-Key':getKey(),"
+    "'Content-Type':'application/octet-stream'},body:f});"
     "if(!r.ok)throw new Error(await r.text());"
     "done++}catch(e){stat.textContent='Error: '+e.message;return}}"
     "bar.style.width='100%';stat.textContent='Done! '+done+' files uploaded to /'+dir;"
     "loadFiles()}"
+    /* API key: kept in this browser, never served with the page */
+    "function getKey(){return localStorage.getItem('lite3dp_key')||''}"
+    "function saveKey(){"
+    "localStorage.setItem('lite3dp_key',document.getElementById('apikey').value.trim());"
+    "document.getElementById('keystatus').textContent='saved'}"
+    "async function rotateKey(){"
+    "if(!confirm('Generate a new key? The old one stops working immediately.'))return;"
+    "const r=await fetch('/api/key/rotate',{method:'POST',headers:{'X-Api-Key':getKey()}});"
+    "const j=await r.json();"
+    "if(r.ok){localStorage.setItem('lite3dp_key',j.apiKey);"
+    "document.getElementById('apikey').value=j.apiKey;"
+    "document.getElementById('keystatus').textContent='rotated — new key saved'}"
+    "else{document.getElementById('keystatus').textContent=j.message||'failed'}}"
     /* Manual control */
     "async function ctl(url,body){"
     "const s=document.getElementById('ctlstatus');s.textContent='...';"
-    "try{const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},"
+    "try{const r=await fetch(url,{method:'POST',"
+    "headers:{'Content-Type':'application/json','X-Api-Key':getKey()},"
     "body:JSON.stringify(body)});const j=await r.json();"
     "s.textContent=r.ok?'OK':'Error: '+(j.message||r.status);"
     "}catch(e){s.textContent='Error: '+e.message}}"
@@ -546,8 +582,9 @@ static const char *WEB_UI_HTML =
     /* Screen mirror: decode the RGB565 area stream onto a canvas */
     "let liveTimer=null;"
     "async function shot(){"
-    "const r=await fetch('/api/screenshot');"
-    "if(!r.ok){document.getElementById('screen').alt='screen busy (printing)';return}"
+    "const r=await fetch('/api/screenshot',{headers:{'X-Api-Key':getKey()}});"
+    "if(!r.ok){document.getElementById('screen').alt="
+    "(r.status===401?'enter the access key above':'screen busy (printing)');return}"
     "const b=new DataView(await r.arrayBuffer());"
     "if(b.byteLength<8||b.getUint32(0,false)!==0x4C333450){return}"  /* 'L3DP' */
     "const w=b.getUint16(4,true),h=b.getUint16(6,true);"
@@ -584,10 +621,12 @@ static const char *WEB_UI_HTML =
     "if(!f){alert('Select firmware .bin file');return}"
     "const st=document.getElementById('otastatus');"
     "st.textContent='Uploading firmware ('+Math.round(f.size/1024)+'KB)...';"
-    "try{const r=await fetch('/api/ota',{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:f});"
+    "try{const r=await fetch('/api/ota',{method:'POST',"
+    "headers:{'Content-Type':'application/octet-stream','X-Api-Key':getKey()},body:f});"
     "const j=await r.json();st.textContent=j.message||'Update complete!';"
     "}catch(e){st.textContent='Error: '+e.message}}"
     /* Init */
+    "document.getElementById('apikey').value=getKey();"
     "setInterval(poll,2000);poll();loadFiles();"
     "</script></body></html>";
 
@@ -595,6 +634,26 @@ static esp_err_t handler_root(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html");
     return httpd_resp_sendstr(req, WEB_UI_HTML);
+}
+
+/* ── POST /api/key/rotate ──────────────────────────────────────── */
+/* Remote rotation, authenticated with the current key. Losing the key is
+ * recovered from physically, via the reset button on the WiFi screen. */
+
+static esp_err_t handler_key_rotate(httpd_req_t *req)
+{
+    if (!api_key_check(req)) return ESP_OK;
+
+    cJSON *j = cJSON_CreateObject();
+    if (api_key_regenerate() == ESP_OK) {
+        cJSON_AddStringToObject(j, "status", "ok");
+        cJSON_AddStringToObject(j, "apiKey", api_key_get());
+    } else {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        cJSON_AddStringToObject(j, "status", "error");
+        cJSON_AddStringToObject(j, "message", "could not save new key");
+    }
+    return send_json(req, j);
 }
 
 /* ── CORS preflight handler ────────────────────────────────────── */
@@ -637,6 +696,7 @@ esp_err_t web_server_start(void)
         { .uri = "/api/print/cancel",.method = HTTP_POST, .handler = handler_print_cancel },
         { .uri = "/api/upload",      .method = HTTP_POST, .handler = handler_upload },
         { .uri = "/api/wifi/config", .method = HTTP_POST, .handler = handler_wifi_config },
+        { .uri = "/api/key/rotate",  .method = HTTP_POST, .handler = handler_key_rotate },
     };
 
     for (int i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {

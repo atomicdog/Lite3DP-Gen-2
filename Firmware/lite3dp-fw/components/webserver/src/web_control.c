@@ -3,6 +3,7 @@
  * Every motion/UV command is refused unless the printer is idle. */
 
 #include "web_control.h"
+#include "api_key.h"
 #include "print_engine.h"
 #include "hal_motor.h"
 #include "hal_uv_led.h"
@@ -71,6 +72,7 @@ static double json_num(const cJSON *obj, const char *key, double fallback)
 
 static esp_err_t handler_motor_jog(httpd_req_t *req)
 {
+    if (!api_key_check(req)) return ESP_OK;
     if (!printer_is_idle()) {
         return reply_error(req, "409 Conflict", "printer is busy");
     }
@@ -109,6 +111,7 @@ static esp_err_t handler_motor_jog(httpd_req_t *req)
 
 static esp_err_t handler_motor_home(httpd_req_t *req)
 {
+    if (!api_key_check(req)) return ESP_OK;
     if (!printer_is_idle()) {
         return reply_error(req, "409 Conflict", "printer is busy");
     }
@@ -129,6 +132,7 @@ static esp_err_t handler_motor_home(httpd_req_t *req)
 
 static esp_err_t handler_motor_off(httpd_req_t *req)
 {
+    if (!api_key_check(req)) return ESP_OK;
     motor_disable();
     cJSON *j = cJSON_CreateObject();
     cJSON_AddStringToObject(j, "status", "ok");
@@ -145,6 +149,7 @@ static void uv_timeout_cb(void *arg)
 
 static esp_err_t handler_uv(httpd_req_t *req)
 {
+    if (!api_key_check(req)) return ESP_OK;
     if (!printer_is_idle()) {
         return reply_error(req, "409 Conflict", "printer is busy");
     }
