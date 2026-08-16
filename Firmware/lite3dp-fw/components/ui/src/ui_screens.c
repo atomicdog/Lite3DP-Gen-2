@@ -233,7 +233,10 @@ static void on_start_print(lv_event_t *e)
      * so touch-started and web-started prints suspend LVGL the same way. */
     esp_err_t err = print_start(&s_pending_job);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "print_start rejected: %s", esp_err_to_name(err));
+        print_status_t st;
+        print_get_status(&st);
+        ESP_LOGW(TAG, "print_start rejected: %s (%s)", esp_err_to_name(err),
+                 st.error[0] ? st.error : "busy");
     }
 }
 

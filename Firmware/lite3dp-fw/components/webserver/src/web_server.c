@@ -70,6 +70,8 @@ static esp_err_t handler_status(httpd_req_t *req)
     default:                      state_str = "unknown"; break;
     }
     cJSON_AddStringToObject(j, "stateStr", state_str);
+    /* Why the last start or print failed — "error" alone is not actionable */
+    cJSON_AddStringToObject(j, "error", status.error);
 
     /* Connectivity and health, so a remote client can see the printer's
      * situation without a second round trip. */
@@ -220,12 +222,28 @@ static esp_err_t handler_print_start(httpd_req_t *req)
         cJSON_AddStringToObject(resp, "message", "No PNG files found in folder");
         return send_json(req, resp);
     }
+    if (ret == ESP_ERR_NOT_SUPPORTED) {
+        httpd_resp_set_status(req, "422 Unprocessable Entity");
+        cJSON_AddStringToObject(resp, "status", "error");
+        cJSON_AddStringToObject(resp, "message",
+            "PNGs found but the file names match no known slicer scheme "
+            "(<folder>00000.png, lychee0000.png, lychee000.png, 0.png or 1.png)");
+        cJSON_AddNumberToObject(resp, "layers", job.total_layers);
+        return send_json(req, resp);
+    }
 
     ret = print_start(&job);
     if (ret == ESP_OK) {
         cJSON_AddStringToObject(resp, "status", "ok");
         cJSON_AddNumberToObject(resp, "layers", job.total_layers);
         cJSON_AddStringToObject(resp, "slicer", slicer_type_name(job.slicer));
+    } else if (ret == ESP_ERR_NOT_SUPPORTED) {
+        /* The engine's own reason, so the client isn't told the wrong thing */
+        print_status_t st;
+        print_get_status(&st);
+        httpd_resp_set_status(req, "422 Unprocessable Entity");
+        cJSON_AddStringToObject(resp, "status", "error");
+        cJSON_AddStringToObject(resp, "message", st.error);
     } else {
         httpd_resp_set_status(req, "409 Conflict");
         cJSON_AddStringToObject(resp, "status", "error");
@@ -491,6 +509,7 @@ static const char *WEB_UI_HTML =
     "<div class='status' id='state'>Connecting...</div>"
     "<div class='progress'><div class='progress-bar' id='pbar' style='width:0%'></div></div>"
     "<div id='info' style='text-align:center;color:#888'></div>"
+    "<div id='err' style='text-align:center;color:#e94560;margin-top:8px'></div>"
     "<div style='text-align:center;margin-top:15px'>"
     "<button class='btn' onclick='printCmd(\"pause\")'>Pause</button>"
     "<button class='btn' onclick='printCmd(\"resume\")'>Resume</button>"
@@ -588,6 +607,7 @@ static const char *WEB_UI_HTML =
     "const fmt=s=>{const m=Math.floor(s/60);return m+'m'+(s%60)+'s'};"
     "document.getElementById('info').innerHTML="
     "'Layer '+s.currentLayer+'/'+s.totalLayers+' &bull; '+fmt(el)+' elapsed &bull; ETA '+fmt(rem);"
+    "document.getElementById('err').textContent=s.error||'';"
     "}catch(e){document.getElementById('state').textContent='OFFLINE'}}"
     /* File listing */
     "async function loadFiles(){"
@@ -701,6 +721,7 @@ static const char *WEB_UI_HTML =
     "async function preview(folder){"
     "const p=await api('GET','/api/job/preview?folder='+encodeURIComponent(folder));"
     "if(!p.layers){alert('No PNG layers found in '+folder);return}"
+    "if(p.warning){alert(folder+': '+p.warning);return}"
     "const h=Math.floor(p.estimatedSeconds/3600),m=Math.round(p.estimatedSeconds%3600/60);"
     "const pr=p.profile;"
     "if(!confirm('Print '+p.folder+'?\\n\\n'+"

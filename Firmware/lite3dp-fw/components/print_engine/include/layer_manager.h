@@ -19,6 +19,22 @@
 int layer_image_index(int layer_num, float layer_height);
 
 /**
+ * Convert a count of source images into the number of layers actually
+ * printed at the given layer height — the inverse of the skip ratio
+ * layer_image_index applies.
+ *
+ * Both must agree, or the layer loop indexes past the last image: 3151
+ * source images printed at 0.1mm is 787 layers, not 3151. Taking the raw
+ * file count as the layer count meant the job ran four times too long and
+ * died at ~25% asking for an image that was never exported.
+ *
+ * @param image_count   Number of layer PNGs in the job folder
+ * @param layer_height  Layer height in mm
+ * @return              Number of printable layers (>= 0)
+ */
+int layer_count_for_height(int image_count, float layer_height);
+
+/**
  * Calculate the exposure time for a given layer, handling
  * bottom layers, transition layers, and normal layers.
  *

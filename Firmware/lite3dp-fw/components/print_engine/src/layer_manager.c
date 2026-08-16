@@ -14,6 +14,22 @@ int layer_image_index(int layer_num, float layer_height)
     }
 }
 
+int layer_count_for_height(int image_count, float layer_height)
+{
+    if (image_count <= 0) {
+        return 0;
+    }
+    /* Mirror layer_image_index's ratio exactly — if these two ever disagree
+     * the print walks off the end of the image sequence. */
+    int ratio = 1;
+    if (layer_height > 0.06f) {
+        ratio = 4;
+    } else if (layer_height > 0.03f) {
+        ratio = 2;
+    }
+    return image_count / ratio;
+}
+
 float layer_exposure_time(int layer_num, int bottom_layers, int transition_layers,
                           float bottom_exposure, float normal_exposure)
 {

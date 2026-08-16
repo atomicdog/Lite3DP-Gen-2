@@ -25,7 +25,14 @@ static esp_err_t handler_ota(httpd_req_t *req)
     }
 
     esp_ota_handle_t ota_handle;
-    esp_err_t ret = esp_ota_begin(update_part, OTA_SIZE_UNKNOWN, &ota_handle);
+    /* OTA_SIZE_UNKNOWN erases all 1.6 MB of the partition in one blocking
+     * call. Measured at ~5.9 s on this board, which is long enough to trip
+     * the TG1 watchdog (rst:0x8) and reboot mid-upload — the OTA could
+     * never finish. OTA_WITH_SEQUENTIAL_WRITES erases a sector at a time
+     * from inside esp_ota_write() instead, so nothing blocks for long and
+     * the erase current is spread across the transfer rather than drawn in
+     * one burst. */
+    esp_err_t ret = esp_ota_begin(update_part, OTA_WITH_SEQUENTIAL_WRITES, &ota_handle);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "OTA begin failed: %s", esp_err_to_name(ret));
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "OTA begin failed");

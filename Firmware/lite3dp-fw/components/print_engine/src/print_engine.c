@@ -15,6 +15,8 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include <string.h>
+#include <stdarg.h>
+#include <stdio.h>
 #include <math.h>
 
 static const char *TAG = "print_engine";
@@ -40,6 +42,24 @@ static void update_status(print_state_t state, int layer)
     xSemaphoreTake(s_status_mutex, portMAX_DELAY);
     s_status.state = state;
     s_status.current_layer = layer;
+    xSemaphoreGive(s_status_mutex);
+}
+
+/* Record why a start or a print failed, so /api/status and the log agree
+ * on a reason the operator can act on. */
+static void set_error(const char *fmt, ...)
+{
+    char msg[sizeof(s_status.error)];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof(msg), fmt, ap);
+    va_end(ap);
+
+    ESP_LOGE(TAG, "%s", msg);
+
+    xSemaphoreTake(s_status_mutex, portMAX_DELAY);
+    strncpy(s_status.error, msg, sizeof(s_status.error) - 1);
+    s_status.error[sizeof(s_status.error) - 1] = '\0';
     xSemaphoreGive(s_status_mutex);
 }
 
@@ -75,7 +95,7 @@ static void print_task(void *arg)
         /* Without a good home there is no Z reference: the job would
          * print from wherever the platform happens to sit. */
         if (motor_home() != ESP_OK) {
-            ESP_LOGE(TAG, "Homing failed — aborting print");
+            set_error("Homing failed: no endstop hit — check the Z endstop");
             update_status(PRINT_STATE_ERROR, 0);
             xEventGroupSetBits(s_print_events, PRINT_EVT_ERROR);
             continue;
@@ -130,9 +150,16 @@ static void print_task(void *arg)
             /* 2. Decode and display layer image on TFT (needs SPI bus) */
             int img_idx = layer_image_index(layer, p->layer_height);
             char layer_path[SD_MAX_PATH];
-            slicer_get_layer_path(s_job.slicer, s_job.folder_path,
-                                  s_job.folder_name, img_idx,
-                                  layer_path, sizeof(layer_path));
+            if (slicer_get_layer_path(s_job.slicer, s_job.folder_path,
+                                      s_job.folder_name, img_idx,
+                                      layer_path, sizeof(layer_path)) != ESP_OK) {
+                set_error("No layer path for slicer '%s' — unknown naming scheme",
+                          slicer_type_name(s_job.slicer));
+                update_status(PRINT_STATE_ERROR, layer);
+                xEventGroupSetBits(s_print_events, PRINT_EVT_ERROR);
+                aborted = true;
+                break;
+            }
 
             spi_bus_acquire();
             tft_set_rotation(2);  /* Print orientation */
@@ -140,7 +167,7 @@ static void print_task(void *arg)
             spi_bus_release();
 
             if (dec_ret != ESP_OK) {
-                ESP_LOGE(TAG, "Failed to decode layer %d: %s", layer, layer_path);
+                set_error("Layer %d: cannot read %s", layer + 1, layer_path);
                 update_status(PRINT_STATE_ERROR, layer);
                 xEventGroupSetBits(s_print_events, PRINT_EVT_ERROR);
                 aborted = true;
@@ -285,20 +312,44 @@ esp_err_t print_job_build(const char *folder_name, print_job_t *out)
     snprintf(out->folder_path, sizeof(out->folder_path),
              "%s/%s", SD_MOUNT_POINT, folder_name);
 
-    slicer_detect(out->folder_path, folder_name, &out->slicer);
+    esp_err_t slicer_ret = slicer_detect(out->folder_path, folder_name, &out->slicer);
 
     int file_count = 0;
     sd_count_files(folder_name, ".png", &file_count);
-    out->total_layers = file_count;
 
     profile_load(0, &out->profile);
 
+    /* Source images are 25µm; the profile's layer height decides how many
+     * of them a layer skips. The printable layer count has to be scaled by
+     * the same ratio the layer loop indexes with. */
+    out->total_layers = layer_count_for_height(file_count, out->profile.layer_height);
+
     if (file_count == 0) return ESP_ERR_NOT_FOUND;
+
+    /* PNGs are present but none match a naming scheme we can index into.
+     * Report it here rather than letting the job start and fail on the
+     * first layer, which looks to the operator like the printer erroring
+     * for no reason. */
+    if (slicer_ret != ESP_OK || out->slicer == SLICER_UNKNOWN) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
     return ESP_OK;
 }
 
 esp_err_t print_start(const print_job_t *job)
 {
+    /* Refuse a job the layer loop can't execute. Without this the print
+     * claims the machine, homes, then dies on layer 1. */
+    if (job->total_layers <= 0) {
+        set_error("Cannot start '%s': no layer images", job->folder_name);
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    if (job->slicer == SLICER_UNKNOWN) {
+        set_error("Cannot start '%s': layer files match no known slicer naming",
+                  job->folder_name);
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
     /* Check-and-claim under the status mutex so a touch start and a web
      * start can't both pass the state test and interleave. */
     xSemaphoreTake(s_status_mutex, portMAX_DELAY);
@@ -317,6 +368,7 @@ esp_err_t print_start(const print_job_t *job)
     s_status.current_layer = 0;
     s_status.elapsed_ms = 0;
     s_status.estimated_remaining_ms = 0;
+    s_status.error[0] = '\0';
     /* Claim the engine before releasing so the next caller sees it busy */
     s_status.state = PRINT_STATE_CALIBRATING;
 

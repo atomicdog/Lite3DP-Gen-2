@@ -67,9 +67,14 @@ int PNG_openFileCallbacks(PNGIMAGE *pPNG, const char *szFilename,
     pPNG->pfnOpen = pfnOpen;
     pPNG->pfnClose = pfnClose;
     pPNG->PNGFile.fHandle = (*pfnOpen)(szFilename, &pPNG->PNGFile.iSize);
-    if (pPNG->PNGFile.fHandle == NULL)
-        return 0;
-    return PNGInit(pPNG);
+    if (pPNG->PNGFile.fHandle == NULL) {
+        /* Must not return 0 here: in this C API 0 is PNG_SUCCESS, so a
+         * failed open would look identical to a good one and the caller
+         * would decode through a NULL file handle. */
+        pPNG->iError = PNG_INVALID_FILE;
+        return PNG_INVALID_FILE;
+    }
+    return PNGInit(pPNG);   /* PNG_SUCCESS (0) on success */
 }
 
 // PNG_openRAM, PNG_close, PNG_getWidth, PNG_getHeight, PNG_getBpp,

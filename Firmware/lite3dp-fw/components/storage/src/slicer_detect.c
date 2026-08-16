@@ -60,6 +60,12 @@ esp_err_t slicer_get_layer_path(slicer_type_t type, const char *folder_path,
                                 const char *folder_name, int layer_num,
                                 char *out_path, size_t out_len)
 {
+    if (!out_path || out_len == 0) return ESP_ERR_INVALID_ARG;
+    /* Never leave the caller's buffer uninitialized: an unknown type used
+     * to hand back a stack full of garbage that then got logged and
+     * fopen()ed. */
+    out_path[0] = '\0';
+
     switch (type) {
     case SLICER_PRUSA:
         snprintf(out_path, out_len, "%s/%s%05d.png", folder_path, folder_name, layer_num);

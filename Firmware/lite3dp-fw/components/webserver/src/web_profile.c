@@ -295,6 +295,12 @@ static esp_err_t handler_job_preview(httpd_req_t *req)
 
     cJSON *j = cJSON_CreateObject();
     cJSON_AddStringToObject(j, "status", ret == ESP_OK ? "ok" : "empty");
+    if (ret == ESP_ERR_NOT_SUPPORTED) {
+        /* Layers exist but can't be addressed — say so here rather than
+         * letting the operator confirm a print that cannot run. */
+        cJSON_AddStringToObject(j, "warning",
+            "layer file names match no known slicer scheme — this job cannot print");
+    }
     cJSON_AddStringToObject(j, "folder", job.folder_name);
     cJSON_AddStringToObject(j, "slicer", slicer_type_name(job.slicer));
     cJSON_AddNumberToObject(j, "layers", layers);

@@ -11,10 +11,16 @@ static const char *TAG = "png_dec";
 /* PNGIMAGE is ~42KB — allocate statically to avoid heap fragmentation */
 static PNGIMAGE s_png;
 
-/* RGB565 line buffer for TFT output (one scanline). Sized for the panel's
- * long side: PNG_getLineAsRGB565 writes the full decoded width before we
- * get a chance to clip, so an oversize source must not overrun this. */
-static uint16_t s_line_buf[TFT_NATIVE_LONG_SIDE];
+/* RGB565 line buffer for TFT output (one scanline).
+ *
+ * PNG_getLineAsRGB565 writes the full decoded width before we get a chance
+ * to clip, so this must be sized for the widest source the decoder will
+ * accept — not for the panel. PNGdec rejects anything with a pitch >=
+ * PNG_MAX_BUFFERED_PIXELS, so that is the true upper bound. Sized to the
+ * panel's 480 instead, every layer image wider than 480 px overran this
+ * buffer by (width-480)*2 bytes into whatever BSS followed, on the very
+ * first scanline. Costs ~5 KB of BSS to be correct. */
+static uint16_t s_line_buf[PNG_MAX_BUFFERED_PIXELS];
 
 /* ── VFS file I/O callbacks for PNGdec ─────────────────────────── */
 
@@ -78,10 +84,22 @@ esp_err_t png_decode_to_tft(const char *filepath)
     tft_set_window(0, 0, TFT_WIDTH - 1, TFT_HEIGHT - 1);
 
     /* Open the PNG file with VFS callbacks */
+    /* The C entry point returns PNG_SUCCESS (0) on success — it is the C++
+     * PNG::open() wrapper that returns 1. Testing for 1 here rejected every
+     * valid layer image and accepted only PNG_INVALID_PARAMETER, so no
+     * layer has ever reached the panel. */
     int rc = PNG_openFileCallbacks(&s_png, filepath, png_open_cb, png_close_cb,
                           png_read_cb, png_seek_cb, png_draw_cb);
-    if (rc != 1) {
-        ESP_LOGE(TAG, "PNG open failed: %s (error %d)", filepath, PNG_getLastError(&s_png));
+    if (rc != PNG_SUCCESS) {
+        /* PNGParseInfo fills in the geometry before it rejects the image,
+         * so report it — "error 7" alone doesn't tell you the layer was
+         * sliced for a different printer's panel. */
+        /* Read the fields directly: PNG_getBpp/PNG_getPixelType are declared
+         * in PNGdec.h but not built in this port. */
+        int err = PNG_getLastError(&s_png);
+        ESP_LOGE(TAG, "PNG open failed: %s (error %d, %dx%d, %d bpp, type %d)",
+                 filepath, err, s_png.iWidth, s_png.iHeight,
+                 s_png.ucBpp, s_png.ucPixelType);
         return ESP_ERR_INVALID_ARG;
     }
 
