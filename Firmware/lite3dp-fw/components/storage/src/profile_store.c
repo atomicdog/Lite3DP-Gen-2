@@ -65,6 +65,17 @@ esp_err_t profile_load(int slot, print_profile_t *profile)
         return ESP_OK;  /* Not an error — just use defaults */
     }
 
+    /* A stored profile with zero exposure or zero speeds would produce a
+     * ruined print and a divide-by-zero time estimate. Refuse to hand one
+     * back whatever is in NVS. */
+    if (profile->layer_height <= 0.0f || profile->exposure_time <= 0.0f ||
+        profile->lift_speed <= 0.0f || profile->retract_speed <= 0.0f ||
+        profile->lift_speed_initial <= 0.0f) {
+        ESP_LOGW(TAG, "Profile slot %d is invalid (zeroed?), using defaults", slot);
+        profile_defaults(profile);
+        return ESP_OK;
+    }
+
     ESP_LOGI(TAG, "Loaded profile slot %d (layer=%.3fmm, expo=%.1fs)", slot,
              (double)profile->layer_height, (double)profile->exposure_time);
     return ESP_OK;

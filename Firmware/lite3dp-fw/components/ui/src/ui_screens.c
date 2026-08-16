@@ -334,7 +334,15 @@ static void on_settings_back(lv_event_t *e)   { ui_navigate(SCREEN_MAIN_MENU); }
 static void on_save_profile(lv_event_t *e)
 {
     int slot = (int)(intptr_t)lv_event_get_user_data(e);
-    profile_save(slot, &s_edit_profile);
+
+    /* Save what is actually in use, not s_edit_profile — that static is
+     * all zeros until the Profile Editor screen has been opened, so
+     * pressing Save from here first would store a zeroed profile (zero
+     * exposure, zero lift speed) and Load would then poison the active
+     * one. */
+    print_profile_t active;
+    profile_load(0, &active);
+    profile_save(slot, &active);
     ESP_LOGI(TAG, "Profile saved to slot %d", slot);
 }
 

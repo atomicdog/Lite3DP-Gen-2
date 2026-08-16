@@ -116,8 +116,19 @@ esp_err_t sd_count_files(const char *dir_path, const char *extension, int *count
 bool sd_file_exists(const char *path)
 {
     char full_path[SD_MAX_PATH];
-    snprintf(full_path, sizeof(full_path), "%s/%s", SD_MOUNT_POINT, path);
-
     struct stat st;
+
+    if (!path || !*path) return false;
+
+    /* Accept both a path relative to the card root and one that already
+     * carries the mount point. slicer_detect builds absolute paths from
+     * job.folder_path, and prefixing those produced
+     * "/sdcard//sdcard/JOB/..." — which never exists, so every slicer
+     * probe failed and every job came back as SLICER_UNKNOWN. */
+    if (strncmp(path, SD_MOUNT_POINT "/", strlen(SD_MOUNT_POINT "/")) == 0) {
+        return stat(path, &st) == 0;
+    }
+
+    snprintf(full_path, sizeof(full_path), "%s/%s", SD_MOUNT_POINT, path);
     return stat(full_path, &st) == 0;
 }

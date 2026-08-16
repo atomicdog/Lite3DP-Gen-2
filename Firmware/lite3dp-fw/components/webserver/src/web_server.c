@@ -24,6 +24,8 @@ static const char *TAG = "web_srv";
 
 static httpd_handle_t s_server = NULL;
 
+static bool is_safe_path_element(const char *s);
+
 /* ── Helper: send JSON response ────────────────────────────────── */
 
 static esp_err_t send_json(httpd_req_t *req, cJSON *json)
@@ -106,10 +108,24 @@ static esp_err_t handler_files(httpd_req_t *req)
     static sd_entry_t entries[SD_MAX_ENTRIES];
     int count = 0;
 
+    /* ?path=SUBDIR lists inside a job folder — without it there is no way
+     * to see the layer filenames, which is what slicer detection keys on. */
+    char query[128], path[64] = "";
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        if (httpd_query_key_value(query, "path", path, sizeof(path)) != ESP_OK) {
+            path[0] = '\0';
+        }
+    }
+    if (path[0] && !is_safe_path_element(path)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid path");
+        return ESP_FAIL;
+    }
+
     cJSON *j = cJSON_CreateObject();
+    cJSON_AddStringToObject(j, "path", path);
     cJSON *arr = cJSON_AddArrayToObject(j, "files");
 
-    if (sd_list_dir("", entries, SD_MAX_ENTRIES, &count) == ESP_OK) {
+    if (sd_list_dir(path, entries, SD_MAX_ENTRIES, &count) == ESP_OK) {
         for (int i = 0; i < count; i++) {
             cJSON *item = cJSON_CreateObject();
             cJSON_AddStringToObject(item, "name", entries[i].name);

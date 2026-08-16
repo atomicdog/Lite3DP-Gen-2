@@ -22,6 +22,13 @@ CONFIG_HTTPD_MAX_URI_LEN=512
 # SPIFFS
 CONFIG_SPIFFS_MAX_PARTITIONS=1
 
+# FATFS — slicers write names like "pyramid00000.png"; without long
+# filename support the card only exposes mangled 8.3 names (PYRAM~1.PNG),
+# so no layer can be opened by its real name. Heap-allocated so the LFN
+# buffer doesn't land on a caller's stack.
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=255
+
 # LVGL
 # Byte-swap LVGL's RGB565 output to match the TFT's big-endian SPI byte order
 # (the PNG mask path and tft_fill_screen already produce big-endian).

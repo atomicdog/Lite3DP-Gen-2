@@ -39,4 +39,9 @@ esp_err_t sd_list_dir(const char *path, sd_entry_t *entries, int max_count, int 
 esp_err_t sd_count_files(const char *dir_path, const char *extension, int *count);
 
 /** Check if a file exists. */
+/**
+ * True if the file exists. Accepts either a path relative to the card
+ * root ("JOB/layer.png") or one already including the mount point
+ * ("/sdcard/JOB/layer.png").
+ */
 bool sd_file_exists(const char *path);
