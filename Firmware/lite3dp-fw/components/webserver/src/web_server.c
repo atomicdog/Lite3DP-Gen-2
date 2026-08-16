@@ -422,6 +422,7 @@ static esp_err_t handler_wifi_config(httpd_req_t *req)
 
 static const char *WEB_UI_HTML =
     "<!DOCTYPE html><html><head>"
+    "<meta charset='utf-8'>"
     "<meta name='viewport' content='width=device-width,initial-scale=1'>"
     "<title>Lite3DP Gen 2</title>"
     "<style>"
@@ -679,7 +680,9 @@ static const char *WEB_UI_HTML =
 
 static esp_err_t handler_root(httpd_req_t *req)
 {
-    httpd_resp_set_type(req, "text/html");
+    /* The page contains UTF-8 punctuation; without the charset browsers
+     * fall back to windows-1252 and mangle it. */
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
     return httpd_resp_sendstr(req, WEB_UI_HTML);
 }
 
