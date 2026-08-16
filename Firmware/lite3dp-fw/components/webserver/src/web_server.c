@@ -10,6 +10,7 @@
 #include "profile_store.h"
 #include "slicer_detect.h"
 #include "sd_card.h"
+#include "hal_endstop.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_system.h"
@@ -94,6 +95,9 @@ static esp_err_t handler_status(httpd_req_t *req)
     cJSON_AddNumberToObject(j, "freeHeap", esp_get_free_heap_size());
     cJSON_AddNumberToObject(j, "uptimeMs", esp_timer_get_time() / 1000);
     cJSON_AddBoolToObject(j, "sdPresent", sd_card_present());
+    /* motor_home() descends until this reads true, so a stuck-true endstop
+     * makes homing return instantly having moved nothing. */
+    cJSON_AddBoolToObject(j, "endstop", endstop_triggered());
 
     return send_json(req, j);
 }

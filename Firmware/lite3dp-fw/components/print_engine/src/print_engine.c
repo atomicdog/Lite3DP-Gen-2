@@ -72,7 +72,14 @@ static void print_task(void *arg)
         /* ── Calibration: home to endstop ──────────────────────── */
         update_status(PRINT_STATE_CALIBRATING, 0);
 
-        motor_home();
+        /* Without a good home there is no Z reference: the job would
+         * print from wherever the platform happens to sit. */
+        if (motor_home() != ESP_OK) {
+            ESP_LOGE(TAG, "Homing failed — aborting print");
+            update_status(PRINT_STATE_ERROR, 0);
+            xEventGroupSetBits(s_print_events, PRINT_EVT_ERROR);
+            continue;
+        }
 
         /* Apply calibration offset */
         if (p->calibration_offset > 0) {

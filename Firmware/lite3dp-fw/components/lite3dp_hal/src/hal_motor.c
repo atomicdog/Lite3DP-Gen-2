@@ -18,6 +18,9 @@ static const char *TAG = "hal_motor";
 
 /* Homing speed: slower for safety */
 #define HOME_SPEED_MM_S     1.0f
+/* Generous upper bound on Z travel — this only has to catch a broken
+ * endstop, not measure the machine. */
+#define HOME_MAX_TRAVEL_MM  200.0f
 #define HOME_DELAY_US       ((uint32_t)(1000000.0f / (MOTOR_STEPS_PER_MM * HOME_SPEED_MM_S)))
 
 static QueueHandle_t       s_cmd_queue;
@@ -128,17 +131,41 @@ esp_err_t motor_home(void)
 {
     ESP_LOGI(TAG, "Homing: descending to endstop...");
 
+    if (endstop_triggered()) {
+        ESP_LOGI(TAG, "Already at endstop");
+        return ESP_OK;
+    }
+
     motor_enable();
     gpio_set_level(PIN_MOTOR_DIR, 0);  /* Down */
 
+    const uint32_t max_steps = (uint32_t)(HOME_MAX_TRAVEL_MM * MOTOR_STEPS_PER_MM);
+    uint32_t steps = 0;
+
     while (!endstop_triggered()) {
+        /* Bounded: a disconnected or failed switch would otherwise drive
+         * the platform down through the FEP and the masking LCD. */
+        if (++steps > max_steps) {
+            ESP_LOGE(TAG, "Homing aborted: no endstop within %.0f mm",
+                     (double)HOME_MAX_TRAVEL_MM);
+            return ESP_ERR_TIMEOUT;
+        }
+
         gpio_set_level(PIN_MOTOR_STEP, 1);
         esp_rom_delay_us(HOME_DELAY_US / 2);
         gpio_set_level(PIN_MOTOR_STEP, 0);
         esp_rom_delay_us(HOME_DELAY_US / 2);
+
+        /* A full descent takes minutes of busy-looping; yield so the
+         * calling task (HTTP or UI) doesn't starve its core or trip the
+         * watchdog. ~1ms per 512 steps is negligible for homing. */
+        if ((steps & 0x1FF) == 0) {
+            vTaskDelay(1);
+        }
     }
 
-    ESP_LOGI(TAG, "Endstop reached");
+    ESP_LOGI(TAG, "Endstop reached after %.2f mm",
+             (double)((float)steps / MOTOR_STEPS_PER_MM));
     return ESP_OK;
 }
 

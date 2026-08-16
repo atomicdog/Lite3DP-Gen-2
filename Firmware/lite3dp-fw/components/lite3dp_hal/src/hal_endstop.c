@@ -10,5 +10,9 @@ esp_err_t endstop_init(void)
 
 bool endstop_triggered(void)
 {
-    return gpio_get_level(PIN_ENDSTOP) == 0;  /* Active low */
+    /* Active HIGH on this board, measured 2026-08-15: the pin reads low
+     * with the platform up and the switch open, and high with the switch
+     * pressed. The previous active-low assumption reported "at home"
+     * whenever the switch was free, so homing exited before stepping. */
+    return gpio_get_level(PIN_ENDSTOP) != 0;
 }
