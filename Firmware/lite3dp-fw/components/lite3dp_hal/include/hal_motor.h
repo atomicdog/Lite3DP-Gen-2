@@ -38,6 +38,11 @@ esp_err_t motor_move_steps(motor_dir_t direction, uint32_t steps, uint32_t delay
 /**
  * Convenience: move a distance in mm at a given speed.
  * Internally converts to steps and delay, then queues the command.
+ *
+ * The sign of `mm` selects direction — positive lifts the platform away
+ * from the vat, negative descends toward it. Note there is no endstop
+ * protecting the top of travel, and the bottom endstop only stops
+ * `motor_home()`, so callers are responsible for sane distances.
  */
 esp_err_t motor_move_mm(float mm, float speed_mm_s);
 

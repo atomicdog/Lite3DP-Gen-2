@@ -106,17 +106,22 @@ esp_err_t motor_move_steps(motor_dir_t direction, uint32_t steps, uint32_t delay
 
 esp_err_t motor_move_mm(float mm, float speed_mm_s)
 {
-    if (mm <= 0.0f || speed_mm_s <= 0.0f) {
+    if (mm == 0.0f || speed_mm_s <= 0.0f) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    uint32_t steps    = (uint32_t)roundf(mm * MOTOR_STEPS_PER_MM);
+    /* Sign selects direction: positive lifts away from the vat, negative
+     * descends toward it. */
+    motor_dir_t dir = (mm < 0.0f) ? MOTOR_DIR_DOWN : MOTOR_DIR_UP;
+
+    uint32_t steps    = (uint32_t)roundf(fabsf(mm) * MOTOR_STEPS_PER_MM);
     uint32_t delay_us = (uint32_t)(1000000.0f / (MOTOR_STEPS_PER_MM * speed_mm_s));
 
-    /* Direction is determined by caller via motor_move_steps;
-       this convenience function always moves "up" (positive).
-       For descend, caller should use motor_move_steps directly. */
-    return motor_move_steps(MOTOR_DIR_UP, steps, delay_us);
+    if (steps == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    return motor_move_steps(dir, steps, delay_us);
 }
 
 esp_err_t motor_home(void)
