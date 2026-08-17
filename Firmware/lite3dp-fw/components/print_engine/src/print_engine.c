@@ -151,7 +151,7 @@ static void print_task(void *arg)
             int img_idx = layer_image_index(layer, p->layer_height);
             char layer_path[SD_MAX_PATH];
             if (slicer_get_layer_path(s_job.slicer, s_job.folder_path,
-                                      s_job.folder_name, img_idx,
+                                      s_job.layer_prefix, s_job.layer_digits, img_idx,
                                       layer_path, sizeof(layer_path)) != ESP_OK) {
                 set_error("No layer path for slicer '%s' — unknown naming scheme",
                           slicer_type_name(s_job.slicer));
@@ -312,7 +312,9 @@ esp_err_t print_job_build(const char *folder_name, print_job_t *out)
     snprintf(out->folder_path, sizeof(out->folder_path),
              "%s/%s", SD_MOUNT_POINT, folder_name);
 
-    esp_err_t slicer_ret = slicer_detect(out->folder_path, folder_name, &out->slicer);
+    esp_err_t slicer_ret = slicer_detect(out->folder_path, folder_name, &out->slicer,
+                                         out->layer_prefix, sizeof(out->layer_prefix),
+                                         &out->layer_digits);
 
     int file_count = 0;
     sd_count_files(folder_name, ".png", &file_count);
