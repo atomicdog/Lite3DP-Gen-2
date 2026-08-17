@@ -56,6 +56,14 @@ void ui_lock(void);
 void ui_unlock(void);
 
 /**
+ * LVGL pool statistics. LVGL allocates from its own static pool
+ * (LV_MEM_SIZE_KILOBYTES), not the ESP heap, so free-heap numbers say nothing
+ * about whether the UI is about to run out. Any argument may be NULL.
+ */
+void ui_mem_stats(uint32_t *free_bytes, uint32_t *free_biggest,
+                  uint8_t *used_pct, uint8_t *frag_pct);
+
+/**
  * Sink for screen capture. Called once per flushed area, in the caller's
  * task context, with big-endian RGB565 pixels for that rectangle.
  * Return ESP_OK to continue; anything else aborts the capture.

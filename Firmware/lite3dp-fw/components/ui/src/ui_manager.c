@@ -261,9 +261,35 @@ void ui_navigate(screen_id_t screen)
          * crashes in LVGL's transform_point during screen transitions */
         lv_scr_load(scr);
         s_current_screen = screen;
-        ESP_LOGI(TAG, "Navigated to screen %d", screen);
+
+        /* LVGL allocates from its own static pool (LV_MEM_SIZE_KILOBYTES),
+         * not the ESP heap — so esp_get_free_heap_size() stays healthy right
+         * up until LVGL starves and its LV_ASSERT_MALLOC fires.  Screens are
+         * cached forever once created, so this only goes one way; log it on
+         * every navigation to see which screens cost what. */
+        lv_mem_monitor_t m;
+        lv_mem_monitor(&m);
+        ESP_LOGI(TAG, "Navigated to screen %d (lv_mem: %u free, %u biggest, "
+                      "%u%% used, %u%% frag)",
+                 screen, (unsigned)m.free_size, (unsigned)m.free_biggest_size,
+                 (unsigned)m.used_pct, (unsigned)m.frag_pct);
     }
     ui_unlock();
+}
+
+void ui_mem_stats(uint32_t *free_bytes, uint32_t *free_biggest,
+                  uint8_t *used_pct, uint8_t *frag_pct)
+{
+    lv_mem_monitor_t m;
+
+    ui_lock();
+    lv_mem_monitor(&m);
+    ui_unlock();
+
+    if (free_bytes)   *free_bytes   = m.free_size;
+    if (free_biggest) *free_biggest = m.free_biggest_size;
+    if (used_pct)     *used_pct     = m.used_pct;
+    if (frag_pct)     *frag_pct     = m.frag_pct;
 }
 
 screen_id_t ui_get_current_screen(void)

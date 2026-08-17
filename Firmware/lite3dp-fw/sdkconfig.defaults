@@ -36,5 +36,17 @@ CONFIG_LV_COLOR_16_SWAP=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
 CONFIG_LV_FONT_MONTSERRAT_40=y
 
+# LVGL logging. Without this an LV_ASSERT_MALLOC (its private pool is only
+# LV_MEM_SIZE_KILOBYTES, separate from the ESP heap) produces no output at all
+# before halting the UI task — a silent frozen display. WARN is quiet in
+# normal operation and names the failing expression when it matters.
+CONFIG_LV_USE_LOG=y
+CONFIG_LV_LOG_LEVEL_WARN=y
+CONFIG_LV_LOG_PRINTF=y
+
+# Supplies LITE3DP_LV_ABORT, which replaces LVGL's `while(1);` assert handler
+# with abort(). See lv_hooks/lite3dp_lv_assert.h and the top-level CMakeLists.
+CONFIG_LV_ASSERT_HANDLER_INCLUDE="lite3dp_lv_assert.h"
+
 # Log level
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y

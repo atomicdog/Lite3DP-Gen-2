@@ -11,6 +11,7 @@
 #include "slicer_detect.h"
 #include "sd_card.h"
 #include "hal_endstop.h"
+#include "ui_manager.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_system.h"
@@ -95,6 +96,17 @@ static esp_err_t handler_status(httpd_req_t *req)
     cJSON_AddStringToObject(j, "wifiApply", apply_str);
     cJSON_AddStringToObject(j, "ip", wifi_get_ip_str());
     cJSON_AddNumberToObject(j, "freeHeap", esp_get_free_heap_size());
+
+    /* LVGL has its own static pool, so freeHeap above stays healthy even as the
+     * UI runs out of memory and hangs on LV_ASSERT_MALLOC. Report both. */
+    uint32_t lv_free = 0, lv_biggest = 0;
+    uint8_t lv_used_pct = 0, lv_frag_pct = 0;
+    ui_mem_stats(&lv_free, &lv_biggest, &lv_used_pct, &lv_frag_pct);
+    cJSON_AddNumberToObject(j, "lvglFree", lv_free);
+    cJSON_AddNumberToObject(j, "lvglBiggestFree", lv_biggest);
+    cJSON_AddNumberToObject(j, "lvglUsedPct", lv_used_pct);
+    cJSON_AddNumberToObject(j, "lvglFragPct", lv_frag_pct);
+
     cJSON_AddNumberToObject(j, "uptimeMs", esp_timer_get_time() / 1000);
     cJSON_AddBoolToObject(j, "sdPresent", sd_card_present());
     /* motor_home() descends until this reads true, so a stuck-true endstop
