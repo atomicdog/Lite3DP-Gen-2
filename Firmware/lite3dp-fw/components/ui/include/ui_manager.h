@@ -20,6 +20,7 @@ typedef enum {
     SCREEN_PRINTING,        /* Active print — TFT used for mask, LVGL suspended */
     SCREEN_PRINT_DONE,
     SCREEN_WIFI_STATUS,
+    SCREEN_TOUCH_TEST,      /* Diagnostics: quadrants, cursor, cal crosshairs */
     SCREEN_COUNT,
 } screen_id_t;
 

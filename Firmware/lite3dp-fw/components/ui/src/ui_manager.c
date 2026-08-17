@@ -243,6 +243,7 @@ void ui_navigate(screen_id_t screen)
     case SCREEN_UTILITIES:      scr = ui_screen_utilities(); break;
     case SCREEN_PRINT_DONE:     scr = ui_screen_print_done(); break;
     case SCREEN_WIFI_STATUS:    scr = ui_screen_wifi_status(); break;
+    case SCREEN_TOUCH_TEST:     scr = ui_screen_touch_test(); break;
     case SCREEN_PRINTING:
         /* Printing screen doesn't use LVGL — suspend and use TFT directly */
         ui_suspend();

@@ -10,6 +10,7 @@
 #include "hal_gpio.h"
 #include "tft_driver.h"
 #include "touch_input.h"
+#include "input_handler.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include <stdio.h>
@@ -982,25 +983,131 @@ static lv_obj_t *s_scr_touch_test = NULL;
 static lv_obj_t *s_touch_cursor = NULL;
 static lv_obj_t *s_touch_label = NULL;
 
+/* ── Crosshair calibration capture ─────────────────────────────── */
+
+#define CAL_INSET       30   /* px from each edge for the corner targets */
+#define CAL_STABLE_HITS  3   /* consecutive pressed polls before capturing */
+
+static lv_obj_t *s_cal_cross_h = NULL;
+static lv_obj_t *s_cal_cross_v = NULL;
+static bool s_cal_mode = false;
+static int  s_cal_idx = 0;
+static int  s_cal_count = 0;
+static touch_cal_point_t s_cal_pts[TOUCH_CAL_POINTS];
+
+static void cal_target_pos(int i, lv_coord_t *tx, lv_coord_t *ty)
+{
+    const lv_coord_t w = scr_w(), h = scr_h();
+    const lv_coord_t l = CAL_INSET, r = w - 1 - CAL_INSET;
+    const lv_coord_t t = CAL_INSET, b = h - 1 - CAL_INSET;
+    const lv_point_t targets[TOUCH_CAL_POINTS] = {
+        {l, t}, {r, t}, {l, b}, {r, b}, {w / 2, h / 2},
+    };
+    *tx = targets[i].x;
+    *ty = targets[i].y;
+}
+
+static void cal_draw_target(int i)
+{
+    lv_coord_t tx, ty;
+    cal_target_pos(i, &tx, &ty);
+
+    lv_obj_set_pos(s_cal_cross_h, tx - 20, ty);
+    lv_obj_set_pos(s_cal_cross_v, tx, ty - 20);
+    lv_obj_clear_flag(s_cal_cross_h, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(s_cal_cross_v, LV_OBJ_FLAG_HIDDEN);
+
+    char buf[64];
+    snprintf(buf, sizeof(buf), "Tap the cross  (%d/%d)", i + 1, TOUCH_CAL_POINTS);
+    lv_label_set_text(s_touch_label, buf);
+}
+
+/* Advances through the five targets, one tap each. Returns to quadrant mode
+ * once every point is captured; the raw pairs are then readable over
+ * GET /api/touch/cal for fitting off-device. */
+static void cal_poll(const touch_point_t *pt)
+{
+    static int  stable = 0;
+    static bool armed = true;   /* must see a release before the next capture */
+
+    if (!pt->pressed) {
+        stable = 0;
+        armed = true;
+        return;
+    }
+    if (!armed) return;
+    if (++stable < CAL_STABLE_HITS) return;
+
+    lv_coord_t tx, ty;
+    cal_target_pos(s_cal_idx, &tx, &ty);
+
+    s_cal_pts[s_cal_idx] = (touch_cal_point_t){
+        .target_x = (uint16_t)tx,
+        .target_y = (uint16_t)ty,
+        .raw_x    = pt->raw_x,
+        .raw_y    = pt->raw_y,
+        .pressure = pt->pressure,
+    };
+    ESP_LOGI(TAG, "cal point %d: target(%d,%d) raw(%u,%u) z=%u",
+             s_cal_idx, tx, ty, pt->raw_x, pt->raw_y, pt->pressure);
+
+    s_cal_count = ++s_cal_idx;
+    stable = 0;
+    armed = false;
+
+    if (s_cal_idx >= TOUCH_CAL_POINTS) {
+        s_cal_mode = false;
+        lv_obj_add_flag(s_cal_cross_h, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_cal_cross_v, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text(s_touch_label, "Capture done - GET /api/touch/cal");
+        ESP_LOGI(TAG, "calibration capture complete");
+    } else {
+        cal_draw_target(s_cal_idx);
+    }
+}
+
 static void touch_test_timer_cb(lv_timer_t *timer)
 {
-    lv_indev_t *indev = lv_indev_get_next(NULL);
-    if (!indev) return;
+    /* Reuse the sample the LVGL read callback already took — a second SPI
+     * burst here would contend with the panel for the bus. */
+    touch_point_t pt;
+    input_handler_last_sample(&pt);
 
-    lv_point_t p;
-    lv_indev_get_point(indev, &p);
+    if (s_cal_mode) {
+        cal_poll(&pt);
+        return;
+    }
 
-    /* Check if touched by looking at IRQ pin (no SPI re-read) */
-    if (touch_input_pressed()) {
+    if (pt.pressed) {
         char buf[64];
-        snprintf(buf, sizeof(buf), "x=%d y=%d", p.x, p.y);
+        snprintf(buf, sizeof(buf), "x=%d y=%d  raw %d,%d  z=%d",
+                 pt.x, pt.y, pt.raw_x, pt.raw_y, pt.pressure);
         lv_label_set_text(s_touch_label, buf);
 
-        lv_obj_set_pos(s_touch_cursor, p.x - 8, p.y - 8);
+        lv_obj_set_pos(s_touch_cursor, pt.x - 8, pt.y - 8);
         lv_obj_clear_flag(s_touch_cursor, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_obj_add_flag(s_touch_cursor, LV_OBJ_FLAG_HIDDEN);
     }
+}
+
+void ui_touch_cal_start(void)
+{
+    ui_screen_touch_test();   /* ensure the objects exist */
+
+    s_cal_idx = 0;
+    s_cal_count = 0;
+    memset(s_cal_pts, 0, sizeof(s_cal_pts));
+    s_cal_mode = true;
+    lv_obj_add_flag(s_touch_cursor, LV_OBJ_FLAG_HIDDEN);
+    cal_draw_target(0);
+    ESP_LOGI(TAG, "calibration capture started");
+}
+
+int ui_touch_cal_points(const touch_cal_point_t **out)
+{
+    if (out) *out = s_cal_pts;
+    return s_cal_count;
 }
 
 lv_obj_t *ui_screen_touch_test(void)
@@ -1056,6 +1163,21 @@ lv_obj_t *ui_screen_touch_test(void)
     lv_obj_set_style_pad_all(s_touch_cursor, 0, 0);
     lv_obj_clear_flag(s_touch_cursor, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_touch_cursor, LV_OBJ_FLAG_HIDDEN);
+
+    /* Calibration crosshair — two 40x2 bars, hidden outside capture mode */
+    lv_obj_t **bars[2] = { &s_cal_cross_h, &s_cal_cross_v };
+    for (int i = 0; i < 2; i++) {
+        lv_obj_t *bar = lv_obj_create(s_scr_touch_test);
+        lv_obj_set_size(bar, i == 0 ? 40 : 2, i == 0 ? 2 : 40);
+        lv_obj_set_style_bg_color(bar, lv_color_white(), 0);
+        lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(bar, 0, 0);
+        lv_obj_set_style_radius(bar, 0, 0);
+        lv_obj_set_style_pad_all(bar, 0, 0);
+        lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_flag(bar, LV_OBJ_FLAG_HIDDEN);
+        *bars[i] = bar;
+    }
 
     lv_timer_create(touch_test_timer_cb, 33, NULL);
 
