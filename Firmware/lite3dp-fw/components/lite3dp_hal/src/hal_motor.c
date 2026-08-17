@@ -16,6 +16,15 @@ static const char *TAG = "hal_motor";
 #define MOTOR_TASK_PRIO     7
 #define MOTOR_TASK_CORE     1
 
+/* Stepping is a busy-wait (esp_rom_delay_us), and the motor task is pinned to
+ * core 1 at priority 7 — above the UI task on the same core. A 6 mm bottom
+ * lift at 0.7 mm/s is 31476 steps of ~272 us, i.e. 8.6 s of solid spinning,
+ * which starves IDLE1 and trips the task watchdog (observed twice per bottom
+ * layer). Yield for a tick roughly this often so the scheduler gets a look in.
+ * Derived from the step rate rather than a fixed step count so the cost stays
+ * ~1 tick per 100 ms of stepping (~1%) at any speed. */
+#define STEP_YIELD_MS       100
+
 /* Homing speed: slower for safety */
 #define HOME_SPEED_MM_S     1.0f
 /* Generous upper bound on Z travel — this only has to catch a broken
@@ -27,6 +36,27 @@ static QueueHandle_t       s_cmd_queue;
 static EventGroupHandle_t  s_notify_eg;
 static EventBits_t         s_idle_bit;
 static TaskHandle_t        s_task_handle;
+
+/* One step pulse at the given rate. Busy-waits: the delays are far too short
+ * (tens to hundreds of microseconds) for vTaskDelay's 1 ms tick. */
+static inline void step_pulse(uint32_t delay_us)
+{
+    gpio_set_level(PIN_MOTOR_STEP, 1);
+    esp_rom_delay_us(delay_us / 2);
+    gpio_set_level(PIN_MOTOR_STEP, 0);
+    esp_rom_delay_us(delay_us / 2);
+}
+
+/* How many steps may run back-to-back before the task must yield. */
+static uint32_t steps_per_yield(uint32_t delay_us)
+{
+    if (delay_us == 0) {
+        return 1024;
+    }
+    uint32_t n = (STEP_YIELD_MS * 1000u) / delay_us;
+    /* A step slower than the yield interval already yields every step */
+    return n ? n : 1;
+}
 
 static void motor_task(void *arg)
 {
@@ -46,12 +76,20 @@ static void motor_task(void *arg)
         /* Set direction */
         gpio_set_level(PIN_MOTOR_DIR, cmd.direction == MOTOR_DIR_UP ? 1 : 0);
 
-        /* Generate step pulses */
+        /* Generate step pulses, yielding periodically so this task does not
+         * hog its core for the whole move. A stepper holds position across the
+         * pause, and there is no acceleration ramp here anyway, so the brief
+         * gap is mechanically no different from the start/stop at either end. */
+        const uint32_t yield_every = steps_per_yield(cmd.delay_us);
+        uint32_t since_yield = 0;
+
         for (uint32_t i = 0; i < cmd.steps; i++) {
-            gpio_set_level(PIN_MOTOR_STEP, 1);
-            esp_rom_delay_us(cmd.delay_us / 2);
-            gpio_set_level(PIN_MOTOR_STEP, 0);
-            esp_rom_delay_us(cmd.delay_us / 2);
+            step_pulse(cmd.delay_us);
+
+            if (++since_yield >= yield_every) {
+                since_yield = 0;
+                vTaskDelay(1);
+            }
         }
     }
 }
@@ -140,7 +178,9 @@ esp_err_t motor_home(void)
     gpio_set_level(PIN_MOTOR_DIR, 0);  /* Down */
 
     const uint32_t max_steps = (uint32_t)(HOME_MAX_TRAVEL_MM * MOTOR_STEPS_PER_MM);
+    const uint32_t yield_every = steps_per_yield(HOME_DELAY_US);
     uint32_t steps = 0;
+    uint32_t since_yield = 0;
 
     while (!endstop_triggered()) {
         /* Bounded: a disconnected or failed switch would otherwise drive
@@ -151,15 +191,13 @@ esp_err_t motor_home(void)
             return ESP_ERR_TIMEOUT;
         }
 
-        gpio_set_level(PIN_MOTOR_STEP, 1);
-        esp_rom_delay_us(HOME_DELAY_US / 2);
-        gpio_set_level(PIN_MOTOR_STEP, 0);
-        esp_rom_delay_us(HOME_DELAY_US / 2);
+        step_pulse(HOME_DELAY_US);
 
-        /* A full descent takes minutes of busy-looping; yield so the
-         * calling task (HTTP or UI) doesn't starve its core or trip the
-         * watchdog. ~1ms per 512 steps is negligible for homing. */
-        if ((steps & 0x1FF) == 0) {
+        /* A full descent takes minutes of busy-looping; yield so the calling
+         * task (HTTP or UI) doesn't starve its core or trip the watchdog.
+         * This one runs in the caller's context, not the motor task. */
+        if (++since_yield >= yield_every) {
+            since_yield = 0;
             vTaskDelay(1);
         }
     }
