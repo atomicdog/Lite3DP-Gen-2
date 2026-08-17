@@ -60,6 +60,9 @@ static lv_obj_t *s_scr_wifi_status = NULL;
 /* Dynamic labels */
 static lv_obj_t *s_done_layers_label = NULL;
 static lv_obj_t *s_done_time_label = NULL;
+static int s_done_layers = 0;
+static int s_done_elapsed_s = 0;
+static void print_done_apply_results(void);
 static lv_obj_t *s_preview_info_label = NULL;
 static lv_obj_t *s_cal_offset_label = NULL;
 
@@ -843,6 +846,9 @@ lv_obj_t *ui_screen_print_done(void)
     lv_obj_set_style_text_color(s_done_time_label, COL_TEXT_DIM, 0);
     lv_obj_align(s_done_time_label, LV_ALIGN_CENTER, 0, 40);
 
+    /* Results usually arrive before this screen is built */
+    print_done_apply_results();
+
     lv_obj_t *ok_btn = lv_btn_create(s_scr_print_done);
     lv_obj_set_size(ok_btn, 200, 50);
     lv_obj_align(ok_btn, LV_ALIGN_BOTTOM_MID, 0, -30);
@@ -855,22 +861,34 @@ lv_obj_t *ui_screen_print_done(void)
     return s_scr_print_done;
 }
 
-void ui_screen_print_done_set_results(int layers, int elapsed_s)
+/* Applies the stored results if the labels exist. The print monitor sets the
+ * results *before* navigating, and the screen is built (or rebuilt, now that
+ * screens are freed on navigation) only once we get there — so the values are
+ * kept and re-applied by the constructor rather than written straight to
+ * widgets that may not exist yet. */
+static void print_done_apply_results(void)
 {
+    char buf[32];
+
     if (s_done_layers_label) {
-        char buf[32];
-        snprintf(buf, sizeof(buf), "Layers: %d", layers);
+        snprintf(buf, sizeof(buf), "Layers: %d", s_done_layers);
         lv_label_set_text(s_done_layers_label, buf);
     }
     if (s_done_time_label) {
-        char buf[32];
-        int h = elapsed_s / 3600;
-        int m = (elapsed_s % 3600) / 60;
-        int s = elapsed_s % 60;
+        int h = s_done_elapsed_s / 3600;
+        int m = (s_done_elapsed_s % 3600) / 60;
+        int s = s_done_elapsed_s % 60;
         if (h > 0) snprintf(buf, sizeof(buf), "Time: %dh %dm %ds", h, m, s);
         else snprintf(buf, sizeof(buf), "Time: %dm %ds", m, s);
         lv_label_set_text(s_done_time_label, buf);
     }
+}
+
+void ui_screen_print_done_set_results(int layers, int elapsed_s)
+{
+    s_done_layers = layers;
+    s_done_elapsed_s = elapsed_s;
+    print_done_apply_results();
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -982,6 +1000,7 @@ lv_obj_t *ui_screen_wifi_status(void)
 static lv_obj_t *s_scr_touch_test = NULL;
 static lv_obj_t *s_touch_cursor = NULL;
 static lv_obj_t *s_touch_label = NULL;
+static lv_timer_t *s_touch_test_timer = NULL;
 
 /* ── Crosshair calibration capture ─────────────────────────────── */
 
@@ -1179,7 +1198,66 @@ lv_obj_t *ui_screen_touch_test(void)
         *bars[i] = bar;
     }
 
-    lv_timer_create(touch_test_timer_cb, 33, NULL);
+    /* Handle kept so the timer dies with the screen — otherwise it would fire
+     * on freed widgets, and a rebuild would leave a second timer running. */
+    s_touch_test_timer = lv_timer_create(touch_test_timer_cb, 33, NULL);
 
     return s_scr_touch_test;
+}
+
+/* ══════════════════════════════════════════════════════════════════
+ *  Screen release
+ * ══════════════════════════════════════════════════════════════════ */
+
+/* Every pointer into a screen has to be cleared along with it. A stale label
+ * pointer here is a use-after-free the next time something updates that label,
+ * and those updates come from other tasks (print monitor, web handlers). */
+void ui_screens_release(screen_id_t id)
+{
+    lv_obj_t **slot = NULL;
+
+    switch (id) {
+    case SCREEN_MAIN_MENU:      slot = &s_scr_main_menu;      break;
+    case SCREEN_FILE_BROWSER:   slot = &s_scr_file_browser;   break;
+    case SCREEN_PRINT_PREVIEW:
+        slot = &s_scr_print_preview;
+        s_preview_info_label = NULL;
+        break;
+    case SCREEN_SETTINGS:       slot = &s_scr_settings;       break;
+    case SCREEN_PROFILE_EDITOR:
+        slot = &s_scr_profile_editor;
+        s_binding_count = 0;
+        break;
+    case SCREEN_CALIBRATION:
+        slot = &s_scr_calibration;
+        s_cal_offset_label = NULL;
+        break;
+    case SCREEN_UTILITIES:      slot = &s_scr_utilities;      break;
+    case SCREEN_PRINT_DONE:
+        slot = &s_scr_print_done;
+        s_done_layers_label = NULL;
+        s_done_time_label = NULL;
+        break;
+    case SCREEN_WIFI_STATUS:    slot = &s_scr_wifi_status;    break;
+    case SCREEN_TOUCH_TEST:
+        slot = &s_scr_touch_test;
+        if (s_touch_test_timer) {
+            lv_timer_del(s_touch_test_timer);
+            s_touch_test_timer = NULL;
+        }
+        s_touch_cursor = NULL;
+        s_touch_label  = NULL;
+        s_cal_cross_h  = NULL;
+        s_cal_cross_v  = NULL;
+        s_cal_mode     = false;
+        break;
+    case SCREEN_PRINTING:  /* owns no LVGL objects */
+    default:
+        return;
+    }
+
+    if (*slot) {
+        lv_obj_del_async(*slot);
+        *slot = NULL;
+    }
 }

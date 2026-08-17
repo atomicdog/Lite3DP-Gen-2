@@ -231,8 +231,10 @@ esp_err_t ui_init(QueueHandle_t input_queue)
 void ui_navigate(screen_id_t screen)
 {
     lv_obj_t *scr = NULL;
+    screen_id_t previous;
 
     ui_lock();
+    previous = s_current_screen;
     switch (screen) {
     case SCREEN_MAIN_MENU:      scr = ui_screen_main_menu(); break;
     case SCREEN_FILE_BROWSER:   scr = ui_screen_file_browser(); break;
@@ -261,6 +263,19 @@ void ui_navigate(screen_id_t screen)
          * crashes in LVGL's transform_point during screen transitions */
         lv_scr_load(scr);
         s_current_screen = screen;
+
+        /* Free the screen we just left. Screens are rebuilt on demand, so
+         * caching every one of them permanently overruns LVGL's pool: the
+         * screens total ~38 KB against a 32 KB budget, and the UI died
+         * wherever the pool happened to run out. Holding only the outgoing and
+         * incoming screen bounds it at roughly the two largest (~21 KB).
+         *
+         * Navigating to the screen already loaded means a deliberate rebuild
+         * (see on_load_profile) — that path cleans and repopulates in place, so
+         * leave it alone. */
+        if (previous != screen) {
+            ui_screens_release(previous);
+        }
 
         /* LVGL allocates from its own static pool (LV_MEM_SIZE_KILOBYTES),
          * not the ESP heap — so esp_get_free_heap_size() stays healthy right
